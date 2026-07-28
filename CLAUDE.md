@@ -222,7 +222,7 @@ src/Dockable/
     WinEventHook.cs      Owns one SetWinEventHook registration: delegate lifetime, double-start guard,
                          stop/RESTART support, optional pid scoping, and the universal
                          idObject==0 && idChild==0 "window itself" filter. All the WinEvent watchers
-                         (MinimizeHook, ForegroundWatcher, TitleWatcher ×2, TaskbarHideWatcher,
+                         (MinimizeHook, ForegroundWatcher, TitleWatcher ×2,
                          Genie/WindowThumbnailCache) compose instances of it.
     StartMenu.cs         Open Start via a synthesized Win keypress (SynthesizedInput).
     QuickSettings.cs     Open the OS Quick Settings flyout (network/sound) via synthesized Win+A.
@@ -248,6 +248,9 @@ src/Dockable/
     AppBarManager.cs     SHAppBarMessage register/reserve (always-visible docking).
     Taskbar.cs           Toggle the taskbar's NATIVE auto-hide (SHAppBarMessage ABM_SETSTATE);
                          also SW_SHOWs the tray windows to undo any legacy force-hide.
+    TaskbarHideWatcher.cs  Keeps the tray SW_HIDDEN in "Never" mode — a 40 ms thread-pool poll that
+                         re-hides anything Explorer re-shows (an edge-hover reveal, attention flash,
+                         Win+D). NOT a WinEvent hook: that was measured not to fire (see below).
     TaskbarWatchdog.cs   Out-of-process restore safety net: spawns a hidden powershell.exe (different
                          image name — survives kill-by-name; no extra binary to ship, so the portable
                          single-file build is unaffected) that Wait-Process-es on the dock's PID, then
@@ -843,6 +846,16 @@ src/Dockable/
     work-area reservation even while SW_HIDDEN, so the shell stacked the dock's AppBar strip on a
     ghost taskbar-height strip and maximized windows floated ~48 px above the dock (measured; looked
     like "reserving for the magnified dock").
+    **The hide only sticks because `Interop/TaskbarHideWatcher` re-asserts it** — auto-hide leaves an
+    edge sensor, and the dock lives on that same edge, so Explorer re-shows the tray the first time the
+    user reaches for the dock. The watcher **polls** (thread-pool `Timer`, 40 ms: two `FindWindow`s,
+    `SW_HIDE` only when something is actually visible). It used to be an `EVENT_OBJECT_SHOW` WinEvent
+    hook scoped to Explorer; that was **measured not to fire** for these re-shows on Win11 25H2
+    (build 26200) — the tray sat visible seconds after a forced `SW_SHOW`, and was visible again right
+    after launch. Don't "optimize" it back into a hook without re-measuring. `Stop()` waits for an
+    in-flight tick (`Timer.Dispose(WaitHandle)`) so switching to Always/Auto can't be stolen back by a
+    stale re-hide. Consequence: the menu bar's **tray-overflow chevron** (`TrayOverflow`, Win+B) can't
+    work in Never mode — it needs a visible taskbar to focus.
 - **Restore on exit/crash/kill**: `Taskbar.CaptureOriginalState()` records the pre-launch auto-hide
   state; `Restore()` (clean exit via `DockWindow.OnClosed` + `App.OnExit`, and managed crash via
   `AppDomain.UnhandledException`) puts it back. **Hard kills** (Task Manager, `taskkill /F`,
