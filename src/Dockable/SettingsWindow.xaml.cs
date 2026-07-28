@@ -92,6 +92,7 @@ public partial class SettingsWindow : Window
         IndicatorsSwitch.IsChecked = s.ShowRunningIndicators;
         AnimateOpeningSwitch.IsChecked = s.AnimateOpeningApps;
         MinimizeIntoIconSwitch.IsChecked = s.MinimizeIntoIcon;
+        ShowOnAllDisplaysSwitch.IsChecked = s.ShowDockOnAllMonitors;
         AutoHideDockSwitch.IsChecked = s.AutoHideDock;
         HideOnFullscreenSwitch.IsChecked = s.HideOnFullscreen;
         ShowSettingsInDockSwitch.IsChecked = s.ShowSettingsInDock;
@@ -152,6 +153,7 @@ public partial class SettingsWindow : Window
         new("DockMenuBar", "Toggle_ShowIndicators", () => RowOf(IndicatorsSwitch), "indicators dots running open applications lights"),
         new("DockMenuBar", "Toggle_AnimateOpening", () => RowOf(AnimateOpeningSwitch), "animate opening applications bounce launch attention hop"),
         new("DockMenuBar", "Toggle_MinimizeIntoIcon", () => RowOf(MinimizeIntoIconSwitch), "minimize into application icon tile thumbnail"),
+        new("DockMenuBar", "Toggle_ShowOnAllDisplays", () => RowOf(ShowOnAllDisplaysSwitch), "all displays monitors screens multi monitor second secondary every display main only"),
         new("DockMenuBar", "Toggle_AutoHideDock", () => RowOf(AutoHideDockSwitch), "automatically hide show dock autohide auto-hide hiding reveal slide"),
         new("DockMenuBar", "Toggle_HideOnFullscreen", () => RowOf(HideOnFullscreenSwitch), "hide fullscreen full screen full-screen apps games video borderless immersive"),
         new("DockMenuBar", "Toggle_ShowSettingsInDock", () => RowOf(ShowSettingsInDockSwitch), "show dockable settings preferences dock tile pin gear keep in dock"),
@@ -570,12 +572,19 @@ public partial class SettingsWindow : Window
     private void IndicatorsSwitch_Click(object sender, RoutedEventArgs e)
         => _vm.SetShowRunningIndicators(IndicatorsSwitch.IsChecked == true);
 
+    private void ShowOnAllDisplaysSwitch_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.Settings.ShowDockOnAllMonitors = ShowOnAllDisplaysSwitch.IsChecked == true;
+        _vm.Save();
+        App.Current.SyncDockMonitors(); // the app owns the extra displays' dock windows
+    }
+
     private void AutoHideDockSwitch_Click(object sender, RoutedEventArgs e)
     {
         _vm.Settings.AutoHideDock = AutoHideDockSwitch.IsChecked == true;
         _vm.Save();
         // The dock owns the behavior (slide out/in + releasing the AppBar reservation).
-        Application.Current.Windows.OfType<DockWindow>().FirstOrDefault()?.ApplyAutoHide();
+        App.Current.MainDock?.ApplyAutoHide();
     }
 
     private void HideOnFullscreenSwitch_Click(object sender, RoutedEventArgs e)
@@ -584,7 +593,7 @@ public partial class SettingsWindow : Window
         _vm.Save();
         // Turning it off restores a dock/menu bar currently hidden for a full-screen app; turning it
         // on takes effect on the next fullscreen check (nothing is fullscreen while we're focused).
-        Application.Current.Windows.OfType<DockWindow>().FirstOrDefault()?.ApplyHideOnFullscreen();
+        App.Current.MainDock?.ApplyHideOnFullscreen();
         Application.Current.Windows.OfType<MenuBarWindow>().FirstOrDefault()?.ApplyHideOnFullscreen();
     }
 
@@ -619,7 +628,7 @@ public partial class SettingsWindow : Window
     private void ShowSettingsInDockSwitch_Click(object sender, RoutedEventArgs e)
     {
         _vm.SetShowSettingsInDock(ShowSettingsInDockSwitch.IsChecked == true);
-        Application.Current.Windows.OfType<DockWindow>().FirstOrDefault()?.RefreshTaskbarApps();
+        App.Current.MainDock?.RefreshTaskbarApps();
     }
 
     // --- Position on screen ---

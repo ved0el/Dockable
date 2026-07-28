@@ -132,6 +132,12 @@ public sealed partial class DockViewModel : ObservableObject
         Settings.Edge = edge;
         Save();
         RecomputeLayout();
+        NotifyEdgeDerived();
+    }
+
+    /// <summary>Re-notifies the read-only properties derived from <see cref="DockSettings.Edge"/>.</summary>
+    private void NotifyEdgeDerived()
+    {
         OnPropertyChanged(nameof(IsVerticalDock));
         OnPropertyChanged(nameof(HoverLabelsEnabled));
         OnPropertyChanged(nameof(DotVAlign));
@@ -263,6 +269,24 @@ public sealed partial class DockViewModel : ObservableObject
             Save();
         }
 
+        InitItems();
+    }
+
+    /// <summary>
+    /// Secondary (extra-display) docks: adopt the main dock's already-loaded settings <i>object</i>
+    /// so every dock reads and writes the same instance. Deliberately skips the store read and the
+    /// one-time seeding (pins, Preferences pin, Downloads) — those belong to the main dock alone.
+    /// </summary>
+    public void AttachShared(DockSettings settings)
+    {
+        Settings = settings;
+        ShowRunningIndicators = settings.ShowRunningIndicators;
+        InitItems();
+    }
+
+    /// <summary>Builds this dock's own tile view-models and first layout.</summary>
+    private void InitItems()
+    {
         _startVm = new DockItemViewModel(DockItem.CreateStartMenu())
         {
             // The sentinel path keys the Start tile's custom icon in PinIcons (never launched).
@@ -281,7 +305,23 @@ public sealed partial class DockViewModel : ObservableObject
         RecomputeLayout();
     }
 
-    public void Save() => _store.Save(Settings);
+    /// <summary>Raised after settings are persisted. The app uses it to re-apply the (shared) settings
+    /// to the other displays' docks, so a change made on any dock lands on all of them.</summary>
+    public event Action? SettingsSaved;
+
+    public void Save()
+    {
+        _store.Save(Settings);
+        SettingsSaved?.Invoke();
+    }
+
+    /// <summary>Re-reads the shared settings object into the live mirror properties (a sibling dock
+    /// changed something). Does not persist.</summary>
+    public void SyncFromSharedSettings()
+    {
+        ShowRunningIndicators = Settings.ShowRunningIndicators;
+        NotifyEdgeDerived();
+    }
 
     // --- Taskbar mirror -----------------------------------------------------------------
 
