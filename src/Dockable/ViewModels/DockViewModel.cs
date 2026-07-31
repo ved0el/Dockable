@@ -244,6 +244,16 @@ public sealed partial class DockViewModel : ObservableObject
             Save();
         }
 
+        // Repair pin lists that already hold two entries for one app (see ReplicateTaskbarPins) — they
+        // predate the guards above and would keep the dock stuck. Without this the user has to unpin
+        // the app twice: the tile is backed by whichever entry survives.
+        if (Settings.PinnedApps is { Count: > 1 } pinList)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (pinList.RemoveAll(p => !seen.Add(PinMatcher.For(p).Key)) > 0)
+                Save();
+        }
+
         // "Show Dockable Settings on the Dock" mirrors whether the Preferences pseudo-app is pinned;
         // the pin list stays the source of truth so removals from before this setting existed stick.
         if (Settings.ShowSettingsInDock != IsPreferencesPinned)
@@ -339,6 +349,7 @@ public sealed partial class DockViewModel : ObservableObject
         var claimed = new bool[windows.Count];
 
         var desired = new List<DockItemViewModel>();
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Pinned apps first, in the dock's own order. Each claims its matching windows.
         foreach (var path in pinnedPaths)
@@ -351,6 +362,16 @@ public sealed partial class DockViewModel : ObservableObject
             }
 
             var pin = PinMatcher.For(path);
+
+            // Two pin entries can resolve to the SAME app (an exe pin plus a taskbar .lnk pointing at
+            // it), and both map to one tile view-model — a duplicate in the composed list breaks
+            // ReconcileItems' index walk (it throws mid-reorder, so the layout never recomputes).
+            // First pin wins: it's the one PinNames/PinIcons key off. Dedupe here, BEFORE claiming
+            // windows and calling UpdateApp — the loser claims nothing, and UpdateApp would then wipe
+            // the winner's window list and retarget its LaunchPath to the duplicate.
+            if (!seenKeys.Add(pin.Key))
+                continue;
+
             var handles = new List<IntPtr>();
             for (int i = 0; i < windows.Count; i++)
             {
@@ -816,9 +837,15 @@ public sealed partial class DockViewModel : ObservableObject
     {
         RecordNamesForTaskbarPins(); // capture each .lnk's name for its resolved target
         var list = Settings.PinnedApps ??= new List<string>();
+        var keys = list.Select(p => PinMatcher.For(p).Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Skip a pin that resolves to an app the dock already has. A taskbar .lnk whose target is
+        // momentarily unresolvable — Explorer rewrites those files whenever the taskbar rebuilds, e.g.
+        // on a primary-monitor change — arrives as the .lnk path itself, which no string comparison
+        // matches against the exe pin it duplicates.
         foreach (var p in pins)
-            if (!list.Contains(p, StringComparer.OrdinalIgnoreCase))
+            if (keys.Add(PinMatcher.For(p).Key))
                 list.Add(p);
+        // Remember ALL of them, skipped ones included, or a deduped pin re-prompts on every taskbar touch.
         RememberTaskbarPins(pins); // also saves
     }
 
