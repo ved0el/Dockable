@@ -772,6 +772,16 @@
 
                             <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
+                            <!-- On: a dock on every display. Off: the main display only. -->
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Toggle_ShowOnAllDisplays}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="ShowOnAllDisplaysSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                              AutomationProperties.Name="{loc:Loc Toggle_ShowOnAllDisplays}"
+                                              VerticalAlignment="Center" Click="ShowOnAllDisplaysSwitch_Click" />
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
                             <Grid Height="44" Margin="16,0">
                                 <TextBlock Text="{loc:Loc Toggle_AutoHideDock}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
                                 <ToggleButton x:Name="AutoHideDockSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"

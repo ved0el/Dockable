@@ -62,6 +62,85 @@ public partial class DockWindow : Window
     private AppBarManager? _appBar;
     private bool _windowRegionClipped;      // true while the window is clipped to the resting bar
 
+    /// <summary>
+    /// True for the extra docks shown on the non-main displays. They render and behave like the main
+    /// dock, but own none of the process-wide machinery — the tray icon, the minimize hooks/animators,
+    /// taskbar visibility and the one-time startup prompts all stay with the main dock, so nothing is
+    /// duplicated N times. Set at construction.
+    /// </summary>
+    internal bool IsSecondary { get; init; }
+
+    // The monitor this dock is anchored to (physical px), assigned by App.SyncDockMonitors. Pinning
+    // the rect instead of re-deriving it from the window position each time keeps a mixed-DPI
+    // placement from bouncing between screens as PositionDock recomputes (it feeds the window size,
+    // which repositions the window, which would pick a different monitor…).
+    private Rect? _pinnedMonitorPx;
+
+    /// <summary>Geometry of the monitor this dock lives on: the pinned rect when the app assigned one,
+    /// with DPI still read live from the window (it follows the window across a DPI change).</summary>
+    private Monitors.Info MonitorInfo()
+    {
+        var info = Monitors.ForWindow(_hwnd);
+        return _pinnedMonitorPx is { } px ? info with { MonitorPx = px } : info;
+    }
+
+    /// <summary>Anchors this dock to <paramref name="monitorPx"/> and moves it there (physical px, so
+    /// it's exact regardless of per-monitor scaling), then re-runs the docking behavior.</summary>
+    internal void PinToMonitor(Rect monitorPx)
+    {
+        _pinnedMonitorPx = monitorPx;
+        if (_hwnd == IntPtr.Zero)
+            return;
+        PInvoke.SetWindowPos((HWND)_hwnd, HWND.Null,
+            (int)Math.Round(monitorPx.Left), (int)Math.Round(monitorPx.Top), 0, 0,
+            SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOZORDER
+            | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
+        ApplyBehavior();
+    }
+
+    /// <summary>
+    /// Re-applies the shared settings object after another dock (or the Preferences window) changed
+    /// it. Debounced by <c>App</c>, so this can afford to be the blunt "re-derive everything" pass;
+    /// the glass backdrop is the one piece that must not be rebuilt when its mode didn't change.
+    /// </summary>
+    internal void ReapplySharedSettings()
+    {
+        if (ViewModel is null)
+            return;
+        ViewModel.SyncFromSharedSettings();
+        ApplyTheme();
+        // Only rebuild the backdrop when the Glass Effect actually changed: ApplyGlassEffect tears
+        // down and restarts the capture thread, and a save arrives on every Preferences slider tick.
+        if (_appliedGlass != ViewModel.Settings.GlassEffect)
+        {
+            _appliedGlass = ViewModel.Settings.GlassEffect;
+            ApplyGlassEffect();
+        }
+        ApplyLiquidGlassSettings();  // shader parameters only
+        ViewModel.RecomputeLayout(); // size/magnification changes re-reserve through ApplyWindowSize
+
+        // Everything above is idempotent and native-call-free. Auto-hide and the edge are not — they
+        // re-assert the AppBar, and a save fires on every pin drag / unpin / slider tick, which would
+        // otherwise twitch maximized windows on every display. Only touch them on a real change.
+        if (_appliedAutoHide != ViewModel.Settings.AutoHideDock)
+        {
+            _appliedAutoHide = ViewModel.Settings.AutoHideDock;
+            ApplyAutoHide(); // covers ApplyBehavior (reserve + reposition + re-clip)
+        }
+        if (_appliedEdge != ViewModel.Settings.Edge)
+        {
+            _appliedEdge = ViewModel.Settings.Edge;
+            ApplyBehavior();
+            UpdateGlassSpecular(); // re-anchor the rim glint to the new edge's screen-centre side
+        }
+    }
+
+    // Last values ReapplySharedSettings acted on, so the broadcast only makes native calls on a real
+    // change (it runs on every settings save, debounced).
+    private GlassEffect? _appliedGlass;
+    private bool? _appliedAutoHide;
+    private DockEdge? _appliedEdge;
+
     /// <summary>True when the dock is on a side edge (Left/Right); the main axis is then screen-Y.</summary>
     private bool IsVerticalDock => ViewModel?.IsVerticalDock ?? false;
 
@@ -177,7 +256,8 @@ public partial class DockWindow : Window
             RefreshTaskbarApps();
             UpdateFullscreenState(); // backstop in case a fullscreen transition didn't raise an event
             CheckCaptureFriendlyExit(); // re-exclude the dock from capture once the Snipping Tool is gone
-            CheckAndPromptNewPins(); // reliable poll for new taskbar pins (the folder watcher often doesn't fire on Win11)
+            if (!IsSecondary)
+                CheckAndPromptNewPins(); // reliable poll for new taskbar pins (the folder watcher often doesn't fire on Win11)
         };
 
         _dragSteadyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(DragSteadyMs) };
@@ -369,24 +449,29 @@ public partial class DockWindow : Window
         // Listen for shell AppBar notifications (taskbar moved, full-screen app, etc.).
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
 
-        _genie.Prewarm(); // build the reusable overlays now so the first minimize is instant
-        _scale.Prewarm();
-        _thumbnails.ShouldSuspend = () => _busy.Count > 0; // don't capture mid-warp (it stutters the frames)
-        _thumbnails.Start();
-        _minimizeHook.WindowMinimizing += OnWindowMinimizing;
-        _minimizeHook.WindowUnminimized += OnWindowUnminimized;
-        _minimizeHook.Start();
+        // The minimize machinery is process-wide (system hooks + one shared warp overlay), so only the
+        // main display's dock runs it — windows minimize into that dock, whichever display they were on.
+        if (!IsSecondary)
+        {
+            _genie.Prewarm(); // build the reusable overlays now so the first minimize is instant
+            _scale.Prewarm();
+            _thumbnails.ShouldSuspend = () => _busy.Count > 0; // don't capture mid-warp (it stutters the frames)
+            _thumbnails.Start();
+            _minimizeHook.WindowMinimizing += OnWindowMinimizing;
+            _minimizeHook.WindowUnminimized += OnWindowUnminimized;
+            _minimizeHook.Start();
 
-        // Pre-empt the minimize gesture so the warp's frame 0 is on screen before the OS minimizes.
-        // Defer the real work off the hook callback so the low-level hook returns immediately.
-        _minimizeIntercept.MinimizeRequested += hwnd => Dispatcher.BeginInvoke(() => InterceptedMinimize(hwnd));
-        _minimizeIntercept.MinimizeAllRequested += () => Dispatcher.BeginInvoke(OnMinimizeAllRequested);
-        _minimizeIntercept.ShowDesktopRequested += () => Dispatcher.BeginInvoke(OnShowDesktopRequested);
-        // Win+Shift+S / PrintScreen: lift the glass capture exclusion BEFORE the snip overlay grabs the
-        // screen, so the dock shows up in the user's capture. Send priority — this must win that race.
-        _minimizeIntercept.ScreenSnipRequested +=
-            () => Dispatcher.BeginInvoke(EnterCaptureFriendlyMode, DispatcherPriority.Send);
-        _minimizeIntercept.Start();
+            // Pre-empt the minimize gesture so the warp's frame 0 is on screen before the OS minimizes.
+            // Defer the real work off the hook callback so the low-level hook returns immediately.
+            _minimizeIntercept.MinimizeRequested += hwnd => Dispatcher.BeginInvoke(() => InterceptedMinimize(hwnd));
+            _minimizeIntercept.MinimizeAllRequested += () => Dispatcher.BeginInvoke(OnMinimizeAllRequested);
+            _minimizeIntercept.ShowDesktopRequested += () => Dispatcher.BeginInvoke(OnShowDesktopRequested);
+            // Win+Shift+S / PrintScreen: lift the glass capture exclusion BEFORE the snip overlay grabs the
+            // screen, so the dock shows up in the user's capture. Send priority — this must win that race.
+            _minimizeIntercept.ScreenSnipRequested +=
+                () => Dispatcher.BeginInvoke(EnterCaptureFriendlyMode, DispatcherPriority.Send);
+            _minimizeIntercept.Start();
+        }
 
         _foreground.ForegroundChanged += OnForegroundChanged;
         _foreground.Start();
@@ -407,9 +492,13 @@ public partial class DockWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        CreateTrayIcon();
+        // One tray icon and one taskbar owner for the process, no matter how many displays.
+        if (!IsSecondary)
+        {
+            CreateTrayIcon();
+            ApplyTaskbarVisibility();
+        }
         ApplyWindowSize();
-        ApplyTaskbarVisibility();
         ApplyAutoHide(); // start the idle/edge watcher (and drop the AppBar strip) if enabled
         StartTaskbarMirror();
 
@@ -421,11 +510,13 @@ public partial class DockWindow : Window
         }
 
         // After the dock is up, run the one-time startup prompts (defer so the dock renders first).
-        Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
-        {
-            PromptAddToStartupIfNeeded();
-            CheckAndPromptNewPins();
-        });
+        // Main dock only — otherwise every display would raise its own copy of the same dialog.
+        if (!IsSecondary)
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+            {
+                PromptAddToStartupIfNeeded();
+                CheckAndPromptNewPins();
+            });
     }
 
     // --- Taskbar mirror: live pinned + running apps ---
@@ -433,7 +524,8 @@ public partial class DockWindow : Window
     private void StartTaskbarMirror()
     {
         RefreshTaskbarApps();
-        SyncPreMinimizedWindows(); // adopt windows already minimized before the dock launched
+        if (!IsSecondary)
+            SyncPreMinimizedWindows(); // adopt windows already minimized before the dock launched
         // The initial layout snapped with just the Start tile; the population above widened the
         // window TARGET, which normally glides there over frames. Snap now, before first paint, so
         // the dock appears at its full (max-magnified) width instead of clipped at the sides — and
@@ -441,6 +533,11 @@ public partial class DockWindow : Window
         ViewModel?.SnapWindowSize();
         SyncAcrylic();
         _appRefreshTimer.Start(); // pick up apps opening/closing
+
+        // The pin watcher also drives the "replicate this new taskbar pin?" prompt, so it stays on the
+        // main dock; the extra displays pick pin changes up on their own 1 s refresh tick.
+        if (IsSecondary)
+            return;
 
         try
         {
@@ -712,7 +809,7 @@ public partial class DockWindow : Window
         // ApplyWindowSize → PositionDock again; the second pass sees no change and falls through.)
         if (_hwnd != IntPtr.Zero && ViewModel is not null)
         {
-            var info = Monitors.ForWindow(_hwnd);
+            var info = MonitorInfo();
             double extent = (IsVerticalDock ? info.MonitorPx.Height : info.MonitorPx.Width) / info.Scale;
             ViewModel.SetFixedMainExtent(extent);
         }
@@ -803,7 +900,7 @@ public partial class DockWindow : Window
 
         if (_dockHidden)
         {
-            var monitor = Monitors.ForWindow(_hwnd).MonitorPx;
+            var monitor = MonitorInfo().MonitorPx;
             bool onEdge = ViewModel.Settings.Edge switch
             {
                 DockEdge.Top => cursor.Y <= monitor.Top + AutoHideRevealPx
@@ -1041,7 +1138,7 @@ public partial class DockWindow : Window
         try
         {
             var dpi = Dpi;
-            var monitor = Monitors.ForWindow(_hwnd).MonitorPx;
+            var monitor = MonitorInfo().MonitorPx;
             if (ViewModel.Settings.Edge is DockEdge.Left or DockEdge.Right)
             {
                 // Full monitor height at the bar's horizontal band.
@@ -1202,26 +1299,42 @@ public partial class DockWindow : Window
     private bool _captureFriendly;
     private DateTime _captureFriendlyHoldUntil; // minimum stay — the overlay takes a moment to appear
 
-    private void EnterCaptureFriendlyMode()
+    // The exclusion is per window, so entering/leaving has to reach EVERY display's dock — otherwise a
+    // snip on display 2 would come out with a dock-shaped hole in it. The gesture hook and the exit
+    // poll below still live on the main dock alone; only the state is fanned out.
+    private void EnterCaptureFriendlyMode() => App.Current.SetDocksCaptureFriendly(true);
+
+    /// <summary>Enters/leaves capture-friendly mode on this dock: the Liquid Glass capture exclusion is
+    /// lifted (so the user's snip shows the dock) and the backdrop capturer stops refracting it.</summary>
+    internal void SetCaptureFriendly(bool on)
     {
-        _captureFriendlyHoldUntil = DateTime.UtcNow.AddSeconds(3);
-        if (_captureFriendly)
+        if (on)
+            _captureFriendlyHoldUntil = DateTime.UtcNow.AddSeconds(3);
+        if (_captureFriendly == on)
             return;
-        _captureFriendly = true;
-        SetCaptureExclusion(false);              // visible to the Snipping Tool
-        _backdropCapturer?.EnterCaptureFriendly(); // stop the glass from refracting the now-visible dock
+        _captureFriendly = on;
+        if (on)
+        {
+            SetCaptureExclusion(false);              // visible to the Snipping Tool
+            _backdropCapturer?.EnterCaptureFriendly(); // stop the glass from refracting the now-visible dock
+        }
+        else
+        {
+            _backdropCapturer?.ExitCaptureFriendly();
+            if (ViewModel?.Settings.GlassEffect == GlassEffect.LiquidGlass && RefractionEffect.IsAvailable)
+                SetCaptureExclusion(true); // the black-flash DWM causes on re-exclusion is skipped by the capturer
+        }
     }
 
     /// <summary>Polled from the 1 s tick: leaves capture-friendly mode once the hold expired and no
-    /// snipping-app window is visible (the recording toolbar keeps one visible for a whole recording).</summary>
+    /// snipping-app window is visible (the recording toolbar keeps one visible for a whole recording).
+    /// Main dock only — it drives every dock's state through the app.</summary>
     private void CheckCaptureFriendlyExit()
     {
-        if (!_captureFriendly || DateTime.UtcNow < _captureFriendlyHoldUntil || AnySnipWindowVisible())
+        if (IsSecondary || !_captureFriendly || DateTime.UtcNow < _captureFriendlyHoldUntil
+            || AnySnipWindowVisible())
             return;
-        _captureFriendly = false;
-        _backdropCapturer?.ExitCaptureFriendly();
-        if (ViewModel?.Settings.GlassEffect == GlassEffect.LiquidGlass && RefractionEffect.IsAvailable)
-            SetCaptureExclusion(true); // the black-flash DWM causes on re-exclusion is skipped by the capturer
+        App.Current.SetDocksCaptureFriendly(false);
     }
 
     private static bool IsForegroundSnipApp()
@@ -1391,7 +1504,7 @@ public partial class DockWindow : Window
         double mLeft, mTop, mWidth, mHeight;
         if (_hwnd != IntPtr.Zero)
         {
-            var info = Monitors.ForWindow(_hwnd);
+            var info = MonitorInfo();
             double scale = info.Scale;
             mLeft = info.MonitorPx.Left / scale;
             mTop = info.MonitorPx.Top / scale;
@@ -1605,7 +1718,8 @@ public partial class DockWindow : Window
         {
             ViewModel.Settings.IconSize = newSize;
             ViewModel.RecomputeLayout();            // resize the dock live
-            _settingsWindow?.SyncSizeFromSettings(); // keep the Dock Preferences slider in sync
+            // Preferences lives on the main dock, so a resize from any display syncs its slider.
+            App.Current.MainDock?._settingsWindow?.SyncSizeFromSettings();
         }
     }
 
@@ -1777,7 +1891,7 @@ public partial class DockWindow : Window
         };
         if (thicknessDip <= 0)
             thicknessDip = 64;
-        var info = Monitors.ForWindow(_hwnd);
+        var info = MonitorInfo();
         int thicknessPx = (int)Math.Round(thicknessDip * info.Scale);
 
         _appBar.Register();
@@ -3717,6 +3831,14 @@ public partial class DockWindow : Window
         if (ViewModel is null)
             return;
 
+        // Single instance across displays: the extra docks hand the request to the main one, which
+        // owns the window (and the minimize-into-the-dock hook on it).
+        if (IsSecondary)
+        {
+            App.Current.MainDock?.OpenDockPreferences(section);
+            return;
+        }
+
         if (_settingsWindow is not null)
         {
             // Already open: if it's minimized into the dock, bring it back (this path skips the warp).
@@ -3956,7 +4078,8 @@ public partial class DockWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
-        RestoreAllMinimized(); // don't leave the user's windows stranded in (now-gone) dock tiles
+        if (!IsSecondary)
+            RestoreAllMinimized(); // don't leave the user's windows stranded in (now-gone) dock tiles
         _appRefreshTimer.Stop();
         _startWatchTimer.Stop();
         _pinCheckTimer.Stop();
@@ -3973,7 +4096,10 @@ public partial class DockWindow : Window
         if (_shellHookMsg != 0 && _hwnd != IntPtr.Zero)
             PInvoke.DeregisterShellHookWindow((HWND)_hwnd);
         _appBar?.Unregister(); // release reserved screen space
-        Taskbar.Restore(); // restore the taskbar to its pre-launch state
+        // Turning "show on all displays" off closes the extra docks while the app keeps running —
+        // only the main dock going away means the taskbar should come back.
+        if (!IsSecondary)
+            Taskbar.Restore(); // restore the taskbar to its pre-launch state
         _trayIcon?.Dispose();
         base.OnClosed(e);
     }

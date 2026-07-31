@@ -132,7 +132,9 @@ overloads, namespaces), build once with the files emitted and read them:
 
 ```
 src/Dockable/
-  App.xaml(.cs)          Entry point. Single-instance (named Mutex); startup wrapped in try/catch
+  App.xaml(.cs)          Entry point + owner of the per-display docks (SyncDockMonitors / MainDock /
+                         the debounced ReapplySharedSettings broadcast) and the menu bar window.
+                         Single-instance (named Mutex); startup wrapped in try/catch
                          that logs + MessageBoxes + exits (so failures aren't silent zombies);
                          crash logging (%APPDATA%\Dockable\crash.log); DispatcherUnhandledException
                          kept non-fatal; exit/crash restore the taskbar (auto-hide off).
@@ -220,7 +222,7 @@ src/Dockable/
     WinEventHook.cs      Owns one SetWinEventHook registration: delegate lifetime, double-start guard,
                          stop/RESTART support, optional pid scoping, and the universal
                          idObject==0 && idChild==0 "window itself" filter. All the WinEvent watchers
-                         (MinimizeHook, ForegroundWatcher, TitleWatcher ×2, TaskbarHideWatcher,
+                         (MinimizeHook, ForegroundWatcher, TitleWatcher ×2,
                          Genie/WindowThumbnailCache) compose instances of it.
     StartMenu.cs         Open Start via a synthesized Win keypress (SynthesizedInput).
     QuickSettings.cs     Open the OS Quick Settings flyout (network/sound) via synthesized Win+A.
@@ -241,10 +243,14 @@ src/Dockable/
     UiaAppMenu.cs        Tier-2 fallback: UI Automation MenuBar scan (WPF/Electron/Qt); labels mirror,
                          but invoking expands the app's OWN menu in place. Cached per HWND (incl.
                          negative); reads/invokes run off the UI thread (huge UIA trees are slow).
-    Monitors.cs          Per-monitor bounds/workarea (px) + DPI for a window.
+    Monitors.cs          Per-monitor bounds/workarea (px) + DPI for a window; All() enumerates every
+                         monitor's bounds (physical px, MAIN DISPLAY FIRST) for the per-display docks.
     AppBarManager.cs     SHAppBarMessage register/reserve (always-visible docking).
     Taskbar.cs           Toggle the taskbar's NATIVE auto-hide (SHAppBarMessage ABM_SETSTATE);
                          also SW_SHOWs the tray windows to undo any legacy force-hide.
+    TaskbarHideWatcher.cs  Keeps the tray SW_HIDDEN in "Never" mode — a 40 ms thread-pool poll that
+                         re-hides anything Explorer re-shows (an edge-hover reveal, attention flash,
+                         Win+D). NOT a WinEvent hook: that was measured not to fire (see below).
     TaskbarWatchdog.cs   Out-of-process restore safety net: spawns a hidden powershell.exe (different
                          image name — survives kill-by-name; no extra binary to ship, so the portable
                          single-file build is unaffected) that Wait-Process-es on the dock's PID, then
@@ -356,6 +362,7 @@ src/Dockable/
 | `MagnificationEnabled` | true | Fisheye magnification on/off. |
 | `TaskbarVisibility` | `Never` | `TaskbarVisibility`: Always (visible) / Auto (native auto-hide, reveal on hover) / Never (fully hidden — default; the dock replaces the taskbar). Pre-launch state restored on exit/crash/kill (watchdog). |
 | `ShowMenuBar` | true | Show the macOS-style top menu bar (reserves a strip at the top of the primary monitor). |
+| `ShowDockOnAllMonitors` | true | A dock on **every** display vs. the main display only. Extra displays get their own `DockWindow` (`IsSecondary`) + `DockViewModel` over the **same** `DockSettings` instance; `App.SyncDockMonitors()` owns their lifetime. See the multi-monitor section. |
 | `AutoHideDock` | false | "Automatically hide and show the Dock" (Preferences + the dock menu's "Turn Hiding On/Off"). Implemented: the dock slides off its edge when idle (`HideProgress` DP animates, `PositionDock` applies the offset), reveals when the cursor presses a 2px edge sliver (`_autoHideTimer` 120 ms watcher; "activity" = hover, drags, flyout, any menu via `Mouse.Captured`, in-flight warps), and the **AppBar strip stays UNRESERVED the whole time it's on** (`ReserveAppBarSpace` unregisters and bails). |
 | `HideOnFullscreen` | true | "Hide on fullscreen apps and games" (Preferences → Dock, under Auto-hide): fully hide the dock + menu bar (windows `Hide()`n, AppBar strips released — not just slid off-screen) while a full-screen/borderless-fullscreen app owns their monitor. Off = they stay visible over full-screen content. Gated in both `UpdateFullscreenState`s; the toggle's `ApplyHideOnFullscreen()` restores a hidden window immediately (bypasses the own-process foreground guard). |
 | `ShowRunningIndicators` | true | Show the running-dot under apps with open windows. |
@@ -495,8 +502,41 @@ src/Dockable/
   above the bar) but is **clipped via `SetWindowRgn` down to the resting bar while idle**
   (`ApplyIdleRegion`) so the overflow area is click-through to windows underneath. Hovering clears
   the clip (`ClearWindowRegion`, on `OnMouseEnter`); it's re-applied when the render loop settles.
-- Per-monitor-v2 DPI aware. Positioning is exact on the **primary** monitor; secondary-monitor
-  placement is approximate (a known TODO).
+- **A dock per display** (`DockSettings.ShowDockOnAllMonitors`, **on by default**; Preferences → Dock).
+  `App.SyncDockMonitors()` is the single owner: it pins the main dock to the main display and opens one
+  extra `DockWindow { IsSecondary = true }` per other display (rebuilding them wholesale on change —
+  it no-ops unless the display layout or the setting actually changed). It runs at startup, on the
+  Preferences toggle, and on `SystemEvents.DisplaySettingsChanged` (marshalled to the UI thread).
+  - `Monitors.All()` (`EnumDisplayMonitors`) returns every monitor's bounds in **physical px, main
+    display first** — that ordering is the contract `SyncDockMonitors` relies on.
+  - `DockWindow.PinToMonitor(rectPx)` moves the window with `SetWindowPos` (physical px, so it's exact
+    under any per-monitor scaling) and **remembers the rect** (`_pinnedMonitorPx`). Every in-window
+    monitor lookup goes through `MonitorInfo()` (pinned rect + live `GetDpiForWindow`) instead of
+    `Monitors.ForWindow` — re-deriving the monitor from the window position could bounce a mixed-DPI
+    dock between screens, since the monitor feeds the window size which repositions the window.
+  - **`IsSecondary` owns nothing process-wide.** The tray icon, the minimize hooks/animators +
+    thumbnail cache, taskbar visibility, the pinned-folder watcher, the one-time startup prompts,
+    `SyncPreMinimizedWindows`, `RestoreAllMinimized` and `Taskbar.Restore()` all stay on the main dock
+    (`App.MainDock`, which is also what `SettingsWindow`/`MenuBarWindow` reach for). A secondary's
+    `OpenDockPreferences` forwards to the main dock so Preferences stays single-instance.
+    **Consequence:** a window minimized on display 2 warps into the **main** display's dock.
+  - **Shared settings, per-display layout.** Each dock has its own `DockViewModel` (layout depends on
+    the monitor's width/DPI) but they all point at the *same* `DockSettings` object via
+    `DockViewModel.AttachShared` — which deliberately skips `Load()`'s store read and one-time seeding.
+    `DockViewModel.Save()` raises `SettingsSaved`; `App.ScheduleDockReapply` **debounces it 150 ms**
+    and then calls `DockWindow.ReapplySharedSettings()` on every dock (theme, glass, layout, docking,
+    auto-hide). The debounce matters — Preferences sliders save on every tick, and
+    `ApplyGlassEffect` restarts the backdrop capture thread (hence the extra `_appliedGlass`
+    change-guard in `ReapplySharedSettings`). Pins / running state / pinned paths need no plumbing:
+    every dock runs its own 1 s `RefreshTaskbarApps` tick.
+  - **Capture-friendly mode is fanned out** (`App.SetDocksCaptureFriendly`): the Liquid Glass capture
+    exclusion is a *per-window* display affinity, and the snip gesture hook + the 1 s exit poll only
+    run on the main dock — without the fan-out a Win+Shift+S on display 2 would come out with a
+    dock-shaped hole in it.
+  - Perf note: with Liquid Glass on, **each** dock runs its own backdrop capture thread.
+- Per-monitor-v2 DPI aware. Positioning is exact when the displays share a scale factor; **mixed-DPI**
+  placement is still approximate (a known TODO — `ComputePlacement` converts the monitor rect to WPF
+  DIPs with that monitor's own scale).
 
 ### Minimize / restore (Phase 3)
 - Minimizing any normal window is replaced with a custom effect into a dock **thumbnail tile**
@@ -806,6 +846,16 @@ src/Dockable/
     work-area reservation even while SW_HIDDEN, so the shell stacked the dock's AppBar strip on a
     ghost taskbar-height strip and maximized windows floated ~48 px above the dock (measured; looked
     like "reserving for the magnified dock").
+    **The hide only sticks because `Interop/TaskbarHideWatcher` re-asserts it** — auto-hide leaves an
+    edge sensor, and the dock lives on that same edge, so Explorer re-shows the tray the first time the
+    user reaches for the dock. The watcher **polls** (thread-pool `Timer`, 40 ms: two `FindWindow`s,
+    `SW_HIDE` only when something is actually visible). It used to be an `EVENT_OBJECT_SHOW` WinEvent
+    hook scoped to Explorer; that was **measured not to fire** for these re-shows on Win11 25H2
+    (build 26200) — the tray sat visible seconds after a forced `SW_SHOW`, and was visible again right
+    after launch. Don't "optimize" it back into a hook without re-measuring. `Stop()` waits for an
+    in-flight tick (`Timer.Dispose(WaitHandle)`) so switching to Always/Auto can't be stolen back by a
+    stale re-hide. Consequence: the menu bar's **tray-overflow chevron** (`TrayOverflow`, Win+B) can't
+    work in Never mode — it needs a visible taskbar to focus.
 - **Restore on exit/crash/kill**: `Taskbar.CaptureOriginalState()` records the pre-launch auto-hide
   state; `Restore()` (clean exit via `DockWindow.OnClosed` + `App.OnExit`, and managed crash via
   `AppDomain.UnhandledException`) puts it back. **Hard kills** (Task Manager, `taskkill /F`,
@@ -950,6 +1000,8 @@ Phases 1–3 + polish implemented:
   toggles), Taskbar — wired live (Position only implements the Bottom edge).
 - **Docking**: always-visible AppBar that reserves only the resting bar; the window is clipped to the
   bar when idle so magnification can bleed over. **Native taskbar auto-hide** (self-restoring).
+- **A dock on every display** (`ShowDockOnAllMonitors`, on by default; off = main display only),
+  reacting to monitor hotplug/resolution changes.
 - **Pinned files & folders** (macOS right section): drop to pin, dock-owned order, per-folder
   Sort by / Display as (Stack composite icons) / View content as (**Fan** with reverse retraction,
   **Grid** balloon, **List** menu, **Automatic** by count); drag out of fan/grid onto the dock;

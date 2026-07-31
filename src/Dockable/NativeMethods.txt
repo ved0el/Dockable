@@ -76,6 +76,7 @@ PKEY_AppUserModel_ID
 
 // --- Multi-monitor + per-monitor DPI ---
 MonitorFromWindow
+EnumDisplayMonitors
 GetMonitorInfo
 MONITORINFO
 GetDpiForWindow

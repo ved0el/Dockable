@@ -42,8 +42,23 @@ public static class ShortcutService
         if (string.IsNullOrWhiteSpace(targetPath))
             return false;
 
+        // A packaged (MSIX) app can't be started from its WindowsApps exe: the process would have no
+        // package identity, and for some apps (Windows Terminal) ShellExecute reports success while
+        // nothing happens at all. Launch it by AUMID instead.
+        if (PackagedApp.AumidForExe(targetPath) is { } aumid)
+            targetPath = PackagedApp.AppsFolderPrefix + aumid;
+
         try
         {
+            // "shell:AppsFolder\<aumid>" isn't a file, so ShellExecute rejects it as a FileName ("the
+            // system cannot find the file specified") — hand the shell URI to explorer, which parses it.
+            // Also covers the AppsFolder paths IdentifyWindow builds for running packaged apps.
+            if (targetPath.StartsWith("shell:", StringComparison.OrdinalIgnoreCase))
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", targetPath) { UseShellExecute = true });
+                return true;
+            }
+
             var psi = new ProcessStartInfo
             {
                 FileName = targetPath,
@@ -199,6 +214,12 @@ public static class ShortcutService
             if (svg is not null)
                 return svg;
         }
+
+        // A packaged (MSIX) app keeps its real icon in the manifest's PNG assets, not in the exe's PE
+        // resource — extracting from the exe yields a placeholder or the wrong artwork. Point the shell
+        // at the AppsFolder item instead (and skip the exe fast-path below).
+        if (PackagedApp.AumidForExe(path) is { } packagedAumid)
+            path = PackagedApp.AppsFolderPrefix + packagedAumid;
 
         // Executables carry their icon in the PE resource. Extract it directly (deterministic, full-res)
         // instead of via the shell image factory, whose async cache occasionally returns a tiny low-res

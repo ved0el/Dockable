@@ -132,6 +132,12 @@ public sealed partial class DockViewModel : ObservableObject
         Settings.Edge = edge;
         Save();
         RecomputeLayout();
+        NotifyEdgeDerived();
+    }
+
+    /// <summary>Re-notifies the read-only properties derived from <see cref="DockSettings.Edge"/>.</summary>
+    private void NotifyEdgeDerived()
+    {
         OnPropertyChanged(nameof(IsVerticalDock));
         OnPropertyChanged(nameof(HoverLabelsEnabled));
         OnPropertyChanged(nameof(DotVAlign));
@@ -238,6 +244,16 @@ public sealed partial class DockViewModel : ObservableObject
             Save();
         }
 
+        // Repair pin lists that already hold two entries for one app (see ReplicateTaskbarPins) — they
+        // predate the guards above and would keep the dock stuck. Without this the user has to unpin
+        // the app twice: the tile is backed by whichever entry survives.
+        if (Settings.PinnedApps is { Count: > 1 } pinList)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (pinList.RemoveAll(p => !seen.Add(PinMatcher.For(p).Key)) > 0)
+                Save();
+        }
+
         // "Show Dockable Settings on the Dock" mirrors whether the Preferences pseudo-app is pinned;
         // the pin list stays the source of truth so removals from before this setting existed stick.
         if (Settings.ShowSettingsInDock != IsPreferencesPinned)
@@ -263,6 +279,24 @@ public sealed partial class DockViewModel : ObservableObject
             Save();
         }
 
+        InitItems();
+    }
+
+    /// <summary>
+    /// Secondary (extra-display) docks: adopt the main dock's already-loaded settings <i>object</i>
+    /// so every dock reads and writes the same instance. Deliberately skips the store read and the
+    /// one-time seeding (pins, Preferences pin, Downloads) — those belong to the main dock alone.
+    /// </summary>
+    public void AttachShared(DockSettings settings)
+    {
+        Settings = settings;
+        ShowRunningIndicators = settings.ShowRunningIndicators;
+        InitItems();
+    }
+
+    /// <summary>Builds this dock's own tile view-models and first layout.</summary>
+    private void InitItems()
+    {
         _startVm = new DockItemViewModel(DockItem.CreateStartMenu())
         {
             // The sentinel path keys the Start tile's custom icon in PinIcons (never launched).
@@ -281,7 +315,23 @@ public sealed partial class DockViewModel : ObservableObject
         RecomputeLayout();
     }
 
-    public void Save() => _store.Save(Settings);
+    /// <summary>Raised after settings are persisted. The app uses it to re-apply the (shared) settings
+    /// to the other displays' docks, so a change made on any dock lands on all of them.</summary>
+    public event Action? SettingsSaved;
+
+    public void Save()
+    {
+        _store.Save(Settings);
+        SettingsSaved?.Invoke();
+    }
+
+    /// <summary>Re-reads the shared settings object into the live mirror properties (a sibling dock
+    /// changed something). Does not persist.</summary>
+    public void SyncFromSharedSettings()
+    {
+        ShowRunningIndicators = Settings.ShowRunningIndicators;
+        NotifyEdgeDerived();
+    }
 
     // --- Taskbar mirror -----------------------------------------------------------------
 
@@ -299,6 +349,7 @@ public sealed partial class DockViewModel : ObservableObject
         var claimed = new bool[windows.Count];
 
         var desired = new List<DockItemViewModel>();
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Pinned apps first, in the dock's own order. Each claims its matching windows.
         foreach (var path in pinnedPaths)
@@ -311,6 +362,16 @@ public sealed partial class DockViewModel : ObservableObject
             }
 
             var pin = PinMatcher.For(path);
+
+            // Two pin entries can resolve to the SAME app (an exe pin plus a taskbar .lnk pointing at
+            // it), and both map to one tile view-model — a duplicate in the composed list breaks
+            // ReconcileItems' index walk (it throws mid-reorder, so the layout never recomputes).
+            // First pin wins: it's the one PinNames/PinIcons key off. Dedupe here, BEFORE claiming
+            // windows and calling UpdateApp — the loser claims nothing, and UpdateApp would then wipe
+            // the winner's window list and retarget its LaunchPath to the duplicate.
+            if (!seenKeys.Add(pin.Key))
+                continue;
+
             var handles = new List<IntPtr>();
             for (int i = 0; i < windows.Count; i++)
             {
@@ -622,10 +683,15 @@ public sealed partial class DockViewModel : ObservableObject
     /// </summary>
     private (string Key, string Name, string LaunchPath) IdentifyWindow(TaskbarApps.RunningWindow w)
     {
-        if (TaskbarApps.IsPackagedAumid(w.Aumid))
+        // Prefer the AUMID from the package manifest over the one the window advertises: Teams' windows
+        // report "MSTeams_8wekyb3d8bbwe!MSTeams.Work", which isn't a registered app id, so
+        // shell:AppsFolder couldn't resolve it — the tile got no icon and fell back to naming itself
+        // after the raw window title.
+        string aumid = PackagedApp.AumidForExe(w.ExePath) ?? w.Aumid;
+        if (TaskbarApps.IsPackagedAumid(aumid))
         {
-            string launchPath = $"shell:AppsFolder\\{w.Aumid}";
-            return ("uwp:" + w.Aumid.ToLowerInvariant(), AumidDisplayName(w.Aumid, w.Title), launchPath);
+            string launchPath = PackagedApp.AppsFolderPrefix + aumid;
+            return ("uwp:" + aumid.ToLowerInvariant(), AumidDisplayName(aumid, w.Title), launchPath);
         }
         if (!string.IsNullOrEmpty(w.ExePath))
             return (w.ExePath.ToLowerInvariant(), SafeName(w.ExePath), w.ExePath);
@@ -776,9 +842,15 @@ public sealed partial class DockViewModel : ObservableObject
     {
         RecordNamesForTaskbarPins(); // capture each .lnk's name for its resolved target
         var list = Settings.PinnedApps ??= new List<string>();
+        var keys = list.Select(p => PinMatcher.For(p).Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Skip a pin that resolves to an app the dock already has. A taskbar .lnk whose target is
+        // momentarily unresolvable — Explorer rewrites those files whenever the taskbar rebuilds, e.g.
+        // on a primary-monitor change — arrives as the .lnk path itself, which no string comparison
+        // matches against the exe pin it duplicates.
         foreach (var p in pins)
-            if (!list.Contains(p, StringComparer.OrdinalIgnoreCase))
+            if (keys.Add(PinMatcher.For(p).Key))
                 list.Add(p);
+        // Remember ALL of them, skipped ones included, or a deduped pin re-prompts on every taskbar touch.
         RememberTaskbarPins(pins); // also saves
     }
 

@@ -453,7 +453,7 @@ public partial class MenuBarWindow : Window
     }
 
     private static DockWindow? FindDock()
-        => Application.Current.Windows.OfType<DockWindow>().FirstOrDefault();
+        => App.Current.MainDock;
 
     // Builds the "Recent Apps" submenu: one entry per open app (windows grouped by executable/AUMID),
     // each raising all of that app's windows when chosen.

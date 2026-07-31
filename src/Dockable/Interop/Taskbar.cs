@@ -153,6 +153,20 @@ public static class Taskbar
         }
     }
 
+    /// <summary>
+    /// True while any taskbar window is on screen. FindWindow matches by class alone, so it finds the
+    /// primary and (the first) secondary tray without the full EnumWindows sweep <see cref="Hide"/>
+    /// does — this is the cheap "does anything need re-hiding?" probe the hide watcher polls.
+    /// </summary>
+    internal static bool AnyTrayWindowVisible()
+    {
+        HWND primary = PInvoke.FindWindow(PrimaryClass, null!);
+        if (!primary.IsNull && PInvoke.IsWindowVisible(primary))
+            return true;
+        HWND secondary = PInvoke.FindWindow(SecondaryClass, null!);
+        return !secondary.IsNull && PInvoke.IsWindowVisible(secondary);
+    }
+
     private static void EnsureTrayWindowsShown()
     {
         HWND primary = PInvoke.FindWindow(PrimaryClass, null!);
@@ -166,25 +180,6 @@ public static class Taskbar
                 PInvoke.ShowWindow(hwnd, SHOW_WINDOW_CMD.SW_SHOW);
             return true; // keep enumerating
         }, default);
-    }
-
-    /// <summary>The process id that owns the primary taskbar (Explorer), or 0 if not found — used to
-    /// scope the "keep hidden" WinEvent hook to just Explorer's windows.</summary>
-    public static unsafe uint TrayProcessId()
-    {
-        HWND tray = PInvoke.FindWindow(PrimaryClass, null!);
-        if (tray.IsNull)
-            return 0;
-        uint pid = 0;
-        PInvoke.GetWindowThreadProcessId(tray, &pid);
-        return pid;
-    }
-
-    /// <summary>True if <paramref name="hwnd"/> is a primary or secondary taskbar window.</summary>
-    internal static bool IsTrayWindow(HWND hwnd)
-    {
-        string cls = GetClassName(hwnd);
-        return cls == PrimaryClass || cls == SecondaryClass;
     }
 
     private static unsafe string GetClassName(HWND hwnd)

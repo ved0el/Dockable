@@ -18,7 +18,15 @@ public partial class App : Application
     private MenuBarWindow? _menuBarWindow;
     private Mutex? _singleInstanceMutex;
 
+    // One extra dock per non-main display, when Settings.ShowDockOnAllMonitors is on.
+    private readonly List<DockWindow> _extraDocks = new();
+    private string _monitorLayout = "";      // signature of the last applied display layout
+    private DispatcherTimer? _reapplyTimer;  // coalesces the "settings changed" broadcast
+
     public static new App Current => (App)Application.Current;
+
+    /// <summary>The dock on the main display — the one that owns the process-wide machinery.</summary>
+    internal DockWindow? MainDock => _dockWindow;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -61,6 +69,10 @@ public partial class App : Application
             _dockWindow = new DockWindow { DataContext = DockViewModel };
             _dockWindow.Show();
 
+            DockViewModel.SettingsSaved += ScheduleDockReapply;
+            SyncDockMonitors(); // anchor to the main display + open the extra displays' docks
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+
             // Opt-in macOS-style menu bar at the top of the primary monitor.
             if (DockViewModel.Settings.ShowMenuBar)
                 SetMenuBarVisible(true);
@@ -76,6 +88,85 @@ public partial class App : Application
                 "Dockable", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown();
         }
+    }
+
+    // Fires on a resolution / scaling / monitor-hotplug change, off the UI thread.
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+        => Dispatcher.BeginInvoke(SyncDockMonitors);
+
+    /// <summary>
+    /// Anchors the main dock to the main display and opens (or closes) one extra dock per other
+    /// display, per <see cref="Models.DockSettings.ShowDockOnAllMonitors"/>. Safe to call repeatedly —
+    /// it no-ops when neither the display layout nor the setting changed. Call after toggling the
+    /// setting and whenever the displays change.
+    /// </summary>
+    public void SyncDockMonitors()
+    {
+        if (_dockWindow is null)
+            return;
+
+        var monitors = Monitors.All();
+        if (monitors.Count == 0)
+            return; // no displays to place on (e.g. mid-hotplug); the next change re-runs this
+
+        bool all = DockViewModel.Settings.ShowDockOnAllMonitors;
+        _dockWindow.PinToMonitor(monitors[0]); // Monitors.All puts the main display first
+
+        string layout = string.Join("|", monitors) + "|" + all;
+        if (layout == _monitorLayout)
+            return;
+        _monitorLayout = layout;
+
+        // Rebuild the extra docks wholesale rather than diffing: display changes and toggles are rare,
+        // and a dock is cheap to stand up next to the reconciliation code a diff would need.
+        foreach (var dock in _extraDocks)
+            dock.Close();
+        _extraDocks.Clear();
+
+        if (!all)
+            return;
+
+        foreach (var monitorPx in monitors.Skip(1))
+        {
+            // Its own view-model (layout is per-display) over the SAME settings object, so a change
+            // made on any dock is a change on all of them.
+            var vm = new DockViewModel(SettingsStore);
+            vm.AttachShared(DockViewModel.Settings);
+            vm.SettingsSaved += ScheduleDockReapply;
+
+            var dock = new DockWindow { IsSecondary = true, DataContext = vm };
+            dock.Show();
+            dock.PinToMonitor(monitorPx);
+            _extraDocks.Add(dock);
+        }
+    }
+
+    /// <summary>Enters/leaves capture-friendly mode (the Snipping Tool lift) on every display's dock —
+    /// the exclusion is a per-window display affinity, so all of them have to be lifted together.</summary>
+    internal void SetDocksCaptureFriendly(bool on)
+    {
+        _dockWindow?.SetCaptureFriendly(on);
+        foreach (var dock in _extraDocks)
+            dock.SetCaptureFriendly(on);
+    }
+
+    /// <summary>Queues the "shared settings changed" broadcast. Debounced because every Preferences
+    /// slider tick saves — re-applying per tick would restart each dock's glass capture thread.</summary>
+    private void ScheduleDockReapply()
+    {
+        if (_reapplyTimer is null)
+        {
+            _reapplyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+            _reapplyTimer.Tick += (_, _) =>
+            {
+                _reapplyTimer!.Stop();
+                _dockWindow?.ReapplySharedSettings();
+                foreach (var dock in _extraDocks)
+                    dock.ReapplySharedSettings();
+            };
+        }
+        _reapplyTimer.Stop();
+        _reapplyTimer.Start();
     }
 
     /// <summary>Shows or hides the top menu bar window, creating it on first show. Owned by the app so
@@ -107,6 +198,7 @@ public partial class App : Application
         // taskbar — a bowing-out duplicate must not clobber either.
         if (_dockWindow is not null)
         {
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             DockViewModel?.Save();
             Taskbar.Restore(); // put the taskbar back to its pre-launch state
         }

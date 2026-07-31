@@ -32,5 +32,35 @@ public static class Monitors
         return new Info(ToRect(mi.rcMonitor), ToRect(mi.rcWork), dpi);
     }
 
+    private const uint MonitorPrimaryFlag = 0x1; // MONITORINFOF_PRIMARY
+
+    /// <summary>
+    /// Bounds (physical pixels) of every active monitor, <b>main display first</b> — the order the
+    /// multi-monitor dock relies on ("all displays" = one dock per entry, "main display only" = the
+    /// first). DPI is deliberately not resolved here: a dock reads its own via GetDpiForWindow once
+    /// it sits on the monitor.
+    /// </summary>
+    public static unsafe List<Rect> All()
+    {
+        var rects = new List<Rect>();
+        int primary = -1;
+
+        PInvoke.EnumDisplayMonitors(HDC.Null, null, (HMONITOR hMonitor, HDC _, RECT* _, LPARAM _) =>
+        {
+            var mi = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
+            if (PInvoke.GetMonitorInfo(hMonitor, ref mi))
+            {
+                if ((mi.dwFlags & MonitorPrimaryFlag) != 0)
+                    primary = rects.Count;
+                rects.Add(ToRect(mi.rcMonitor));
+            }
+            return true;
+        }, default);
+
+        if (primary > 0)
+            (rects[0], rects[primary]) = (rects[primary], rects[0]);
+        return rects;
+    }
+
     private static Rect ToRect(RECT r) => new(r.left, r.top, r.right - r.left, r.bottom - r.top);
 }

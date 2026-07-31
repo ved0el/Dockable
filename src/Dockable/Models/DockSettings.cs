@@ -156,6 +156,13 @@ public sealed class DockSettings
     public bool ShowMenuBar { get; set; } = true;
 
     /// <summary>
+    /// Show a dock on every display (Windows-taskbar style), instead of only the main one. On by
+    /// default. Each extra display gets its own dock window sharing this settings object; the main
+    /// display's dock stays the one that owns the global machinery (tray icon, minimize hooks).
+    /// </summary>
+    public bool ShowDockOnAllMonitors { get; set; } = true;
+
+    /// <summary>
     /// Automatically hide and show the Dock (macOS-style). Off by default. NOTE: only the setting
     /// exists so far — the hide/reveal behavior itself is not implemented yet.
     /// </summary>
