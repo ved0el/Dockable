@@ -683,10 +683,15 @@ public sealed partial class DockViewModel : ObservableObject
     /// </summary>
     private (string Key, string Name, string LaunchPath) IdentifyWindow(TaskbarApps.RunningWindow w)
     {
-        if (TaskbarApps.IsPackagedAumid(w.Aumid))
+        // Prefer the AUMID from the package manifest over the one the window advertises: Teams' windows
+        // report "MSTeams_8wekyb3d8bbwe!MSTeams.Work", which isn't a registered app id, so
+        // shell:AppsFolder couldn't resolve it — the tile got no icon and fell back to naming itself
+        // after the raw window title.
+        string aumid = PackagedApp.AumidForExe(w.ExePath) ?? w.Aumid;
+        if (TaskbarApps.IsPackagedAumid(aumid))
         {
-            string launchPath = $"shell:AppsFolder\\{w.Aumid}";
-            return ("uwp:" + w.Aumid.ToLowerInvariant(), AumidDisplayName(w.Aumid, w.Title), launchPath);
+            string launchPath = PackagedApp.AppsFolderPrefix + aumid;
+            return ("uwp:" + aumid.ToLowerInvariant(), AumidDisplayName(aumid, w.Title), launchPath);
         }
         if (!string.IsNullOrEmpty(w.ExePath))
             return (w.ExePath.ToLowerInvariant(), SafeName(w.ExePath), w.ExePath);
