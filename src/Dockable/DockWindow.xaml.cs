@@ -2839,6 +2839,7 @@ public partial class DockWindow : Window
         MenuBuilder.AddItem(menu, Loc.T("Menu_DockPreferences"), () => OpenDockPreferences());
         MenuBuilder.AddItem(menu, Loc.T("Menu_AboutDockable"), OpenAbout);
         menu.Items.Add(new Separator());
+        MenuBuilder.AddItem(menu, Loc.T("Menu_ReloadDockable"), () => (Application.Current as App)?.Relaunch());
         MenuBuilder.AddItem(menu, Loc.T("Menu_QuitDockable"), () => Application.Current.Shutdown());
         return menu;
     }

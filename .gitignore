@@ -64,3 +64,6 @@ desktop.ini
 .DS_Store
 *.swp
 *~
+
+# --- Codegraph ----
+.codegraph

@@ -446,6 +446,7 @@ public partial class MenuBarWindow : Window
         MenuBuilder.AddItem(menu, Loc.T("Menu_DockPreferences"), () => FindDock()?.OpenDockPreferences());
         MenuBuilder.AddItem(menu, Loc.T("Menu_AboutDockable"), () => FindDock()?.OpenDockPreferences("About"));
         menu.Items.Add(new Separator());
+        MenuBuilder.AddItem(menu, Loc.T("Menu_ReloadDockable"), () => (Application.Current as App)?.Relaunch());
         MenuBuilder.AddItem(menu, Loc.T("Menu_QuitDockable"), () => Application.Current.Shutdown());
         menu.Placement = PlacementMode.MousePoint;
         menu.IsOpen = true;

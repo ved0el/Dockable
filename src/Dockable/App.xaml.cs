@@ -17,6 +17,7 @@ public partial class App : Application
     private DockWindow? _dockWindow;
     private MenuBarWindow? _menuBarWindow;
     private Mutex? _singleInstanceMutex;
+    private bool _relaunchOnExit;
 
     // One extra dock per non-main display, when Settings.ShowDockOnAllMonitors is on.
     private readonly List<DockWindow> _extraDocks = new();
@@ -192,6 +193,13 @@ public partial class App : Application
     /// Light/Dark/Auto theme changes so the bar stays coordinated with the dock.</summary>
     public void RefreshMenuBarTheme() => _menuBarWindow?.RefreshTheme();
 
+    /// <summary>Restarts Dockable: shuts this instance down and starts a fresh one on exit.</summary>
+    public void Relaunch()
+    {
+        _relaunchOnExit = true;
+        Shutdown();
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
         // Only the instance that actually started the dock should persist settings / restore the
@@ -205,6 +213,15 @@ public partial class App : Application
 
         _singleInstanceMutex?.ReleaseMutex();
         _singleInstanceMutex?.Dispose();
+
+        // Relaunch AFTER the mutex is gone, so the new instance isn't rejected as a duplicate.
+        // Starting it before this process fully dies also lets the taskbar watchdog see a live dock
+        // and skip its restore (no taskbar flash mid-reload).
+        if (_relaunchOnExit && Environment.ProcessPath is { } exe)
+        {
+            try { System.Diagnostics.Process.Start(exe); } catch { /* nothing sane to do on exit */ }
+        }
+
         base.OnExit(e);
     }
 
