@@ -206,6 +206,17 @@ public partial class DockWindow : Window
     // the restore warp ends at the captured size — not the slightly larger GetWindowPlacement rect.
     private readonly Dictionary<IntPtr, Int32Rect> _minimizedSourcePx = new();
 
+    // Hover previews: live DWM thumbnails of an app's windows, in a flyout above its icon.
+    private const int PreviewDwellMs = 450;   // hover this long before the flyout opens
+    private const int PreviewWatchMs = 150;   // cursor poll that closes it again
+    private const double PreviewGapDip = 4;   // breathing room above the dock window
+    private WindowPreview? _preview;                     // built on first use, then reused
+    private readonly DispatcherTimer _previewDwellTimer;
+    private readonly DispatcherTimer _previewWatchTimer;
+    private DockItemViewModel? _previewItem;             // the icon the open flyout belongs to
+    private DockItemViewModel? _previewPending;          // the icon the dwell timer is counting for
+    private int _previewAwayTicks;                       // consecutive ticks with the cursor elsewhere
+
     // Mirror the taskbar: poll running apps + watch the pinned folder.
     private readonly uint _ownProcessId = (uint)Environment.ProcessId;
     private readonly DispatcherTimer _appRefreshTimer;
@@ -257,8 +268,16 @@ public partial class DockWindow : Window
             UpdateFullscreenState(); // backstop in case a fullscreen transition didn't raise an event
             CheckCaptureFriendlyExit(); // re-exclude the dock from capture once the Snipping Tool is gone
             if (!IsSecondary)
+            {
+                PruneStaleMinimized();   // drop previews of windows that were closed while minimized
                 CheckAndPromptNewPins(); // reliable poll for new taskbar pins (the folder watcher often doesn't fire on Win11)
+            }
         };
+
+        _previewDwellTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(PreviewDwellMs) };
+        _previewDwellTimer.Tick += OnPreviewDwellElapsed;
+        _previewWatchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(PreviewWatchMs) };
+        _previewWatchTimer.Tick += OnPreviewWatchTick;
 
         _dragSteadyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(DragSteadyMs) };
         _dragSteadyTimer.Tick += OnDragSteadyElapsed;
@@ -931,6 +950,7 @@ public partial class DockWindow : Window
         // Anything mid-interaction counts as activity: drags/resizes, an open flyout, any menu
         // (menus hold the thread's mouse capture), or an in-flight minimize warp.
         bool active = overDock || _dragInitiated || _separatorResize || FanPopup.IsOpen
+            || _preview?.IsVisible == true // don't slide away while the user is reading a hover preview
             || Mouse.Captured is not null || _busy.Count > 0;
         if (active)
         {
@@ -2093,6 +2113,25 @@ public partial class DockWindow : Window
         _minimizedSourcePx.Remove(hwnd);
     }
 
+    /// <summary>Drops the dock representation of every tracked window that is no longer minimized —
+    /// closed while minimized (an app exit raises no event we hook, so its preview tile lingered until
+    /// clicked) or restored without us seeing EVENT_SYSTEM_MINIMIZEEND. Polled from the 1 s tick.</summary>
+    private void PruneStaleMinimized()
+    {
+        if (ViewModel is null)
+            return;
+        // MinimizedWindows is a snapshot, so dropping tracking mid-loop is safe.
+        foreach (var tile in ViewModel.MinimizedWindows)
+            if (!tile.Departing && IsStaleMinimized(tile.Hwnd))
+                DropMinimizedTracking(tile.Hwnd, tile);
+        foreach (var hwnd in _iconMinimized.Keys.ToArray())
+            if (IsStaleMinimized(hwnd))
+                DropMinimizedTracking(hwnd, null);
+    }
+
+    private bool IsStaleMinimized(IntPtr hwnd)
+        => !_busy.Contains(hwnd) && (!WindowControl.IsWindow(hwnd) || !WindowControl.IsIconic(hwnd));
+
     /// <summary>A window we have a minimized tile for was restored by something other than the dock
     /// (taskbar, Alt+Tab, the app itself). The OS already brought it back — and since its transitions
     /// are suppressed it popped in instantly, which is exactly what's expected from those gestures — so
@@ -2633,10 +2672,157 @@ public partial class DockWindow : Window
         _lastRenderTime = TimeSpan.Zero; // next hook starts a fresh frame-delta clock (nominal first step)
     }
 
+    // --- Hover previews -----------------------------------------------------------------
+
+    /// <summary>Hovering an app icon with open windows arms the preview flyout (after a short dwell,
+    /// so sweeping across the dock doesn't flash one on every icon). Moving onto a different app while
+    /// one is open switches it immediately.</summary>
+    private void DockItem_MouseEnter(object sender, MouseEventArgs e)
+    {
+        var item = (sender as FrameworkElement)?.DataContext as DockItemViewModel;
+        if (item is null || !CanPreview(item))
+        {
+            _previewPending = null;
+            _previewDwellTimer.Stop();
+            if (_previewItem is not null)
+                ClosePreview(); // moved onto a separator/tile/pin: nothing to preview
+            return;
+        }
+
+        _previewPending = item;
+        if (_previewItem is not null && !ReferenceEquals(_previewItem, item))
+        {
+            ShowPreview(item); // already reading previews — no second dwell
+            return;
+        }
+        if (_previewItem is null)
+        {
+            _previewDwellTimer.Stop();
+            _previewDwellTimer.Start();
+        }
+    }
+
+    private static bool CanPreview(DockItemViewModel item) => item.IsTaskbarApp && item.Windows.Count > 0;
+
+    private void OnPreviewDwellElapsed(object? sender, EventArgs e)
+    {
+        _previewDwellTimer.Stop();
+        var item = _previewPending;
+        // Magnification slides icons around under a still cursor, so the item the pointer entered may
+        // no longer be the one under it — re-check geometrically (MouseLeave is unreliable here).
+        if (item is not null && CanPreview(item) && IsCursorOverItem(item)
+            && !_dragInitiated && !_separatorResize && !FanPopup.IsOpen && Mouse.Captured is null)
+            ShowPreview(item);
+    }
+
+    private void ShowPreview(DockItemViewModel item)
+    {
+        if (ViewModel is null)
+            return;
+        var windows = item.Windows.Where(WindowControl.IsWindow).ToList();
+        if (windows.Count == 0)
+        {
+            ClosePreview();
+            return;
+        }
+
+        _preview ??= new WindowPreview();
+        var info = MonitorInfo();
+        // Anchor above the whole dock WINDOW, not the icon: magnified icons and their hover labels
+        // overflow well above the bar, and the flyout must clear both.
+        var anchorPx = RootCanvas.PointToScreen(new Point(item.X + item.RenderWidth / 2, 0));
+        var topPx = PointToScreen(new Point(0, 0));
+        _preview.Open(windows, anchorPx.X, topPx.Y - PreviewGapDip * info.Scale, info.MonitorPx,
+            info.Scale, SystemTheme.IsDarkEffective(ViewModel.Settings.Theme), OnPreviewPick);
+
+        _previewItem = item;
+        _previewAwayTicks = 0;
+        _previewWatchTimer.Start();
+    }
+
+    /// <summary>Closes the flyout once the cursor has left both it and its icon — polled, because the
+    /// two are separate windows (WPF sees no MouseLeave for the gap between them).</summary>
+    private void OnPreviewWatchTick(object? sender, EventArgs e)
+    {
+        if (_previewItem is null)
+        {
+            _previewWatchTimer.Stop();
+            return;
+        }
+        // Mouse.Captured covers any menu that opened over the dock (they hold the capture) — the
+        // flyout must not stay lit behind an icon's context menu.
+        if (!CanPreview(_previewItem) || _dragInitiated || _separatorResize || FanPopup.IsOpen
+            || Mouse.Captured is not null)
+        {
+            ClosePreview();
+            return;
+        }
+
+        bool over = IsCursorOverItem(_previewItem) || _preview?.ContainsCursor() == true;
+        _previewAwayTicks = over ? 0 : _previewAwayTicks + 1;
+        if (_previewAwayTicks >= 2) // one tick can land while the cursor is mid-transit across the gap
+            ClosePreview();
+    }
+
+    private void ClosePreview()
+    {
+        _previewDwellTimer.Stop();
+        _previewWatchTimer.Stop();
+        _previewItem = null;
+        _previewPending = null;
+        _preview?.Retract();
+    }
+
+    /// <summary>Is the cursor inside this item's cell? (Same geometry-over-MouseLeave reasoning as the
+    /// magnification hover test: on a layered window WPF's leave events fire on transparent pixels.)</summary>
+    private bool IsCursorOverItem(DockItemViewModel item)
+    {
+        if (!PInvoke.GetCursorPos(out var cursor))
+            return false;
+        try
+        {
+            var p = RootCanvas.PointFromScreen(new Point(cursor.X, cursor.Y));
+            return p.X >= item.X && p.X <= item.X + item.RenderWidth
+                && p.Y >= item.Y && p.Y <= item.Y + item.RenderSize;
+        }
+        catch
+        {
+            return false; // can't map (window mid-teardown) — let the caller close the flyout
+        }
+    }
+
+    /// <summary>A preview thumbnail was clicked: raise that one window (or restore it with the reverse
+    /// warp when the dock holds it minimized). Minimize tracking lives on the main dock, so a secondary
+    /// dock hands the restore over — the same way its windows minimize into the main dock.</summary>
+    private void OnPreviewPick(IntPtr hwnd)
+    {
+        ClosePreview(); // hide before a restore warp starts painting over the same area
+        (IsSecondary ? App.Current.MainDock : this)?.ActivateWindow(hwnd);
+    }
+
+    private void ActivateWindow(IntPtr hwnd)
+    {
+        if (!WindowControl.IsWindow(hwnd))
+            return;
+        var tile = ViewModel?.FindMinimizedWindow(hwnd);
+        if (tile is null && !WindowControl.IsIconic(hwnd))
+        {
+            WindowControl.Activate(hwnd);
+            return;
+        }
+        var bitmap = tile is not null
+            ? tile.Icon as BitmapSource
+            : _iconMinimized.GetValueOrDefault(hwnd) ?? _thumbnails.TryGet(hwnd)?.Bitmap;
+        RestoreQueueNext(
+            new List<(IntPtr Hwnd, DockItemViewModel? Tile, BitmapSource? Bitmap)> { (hwnd, tile, bitmap) },
+            0, null);
+    }
+
     // --- Item interaction ---
 
     private void DockItem_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
+        ClosePreview(); // a click/drag starts: the hover flyout has had its turn
         _dragInitiated = false;
         _removeArmed = false;
         var item = (sender as FrameworkElement)?.DataContext as DockItemViewModel;
@@ -4084,6 +4270,9 @@ public partial class DockWindow : Window
         _appRefreshTimer.Stop();
         _startWatchTimer.Stop();
         _pinCheckTimer.Stop();
+        _previewDwellTimer.Stop();
+        _previewWatchTimer.Stop();
+        _preview?.Close(); // unregisters its live DWM thumbnails
         _backdropCapturer?.Stop(); // joins the capture thread before we tear down the profiler
         _glassProfiler?.Dispose();
         SetCaptureExclusion(false); // don't leave the dock excluded from capture

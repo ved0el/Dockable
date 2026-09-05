@@ -222,3 +222,10 @@ FOLDERID_Downloads
 RegisterShellHookWindow
 DeregisterShellHookWindow
 RegisterWindowMessage
+
+// --- Hover previews: live DWM window thumbnails (same mechanism as the taskbar's previews) ---
+DwmRegisterThumbnail
+DwmUnregisterThumbnail
+DwmUpdateThumbnailProperties
+DwmQueryThumbnailSourceSize
+DWM_THUMBNAIL_PROPERTIES

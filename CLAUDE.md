@@ -159,6 +159,11 @@ src/Dockable/
                          (Win+A) + Notifications (Win+N) buttons, and a clock. Its own AppBarManager
                          (WM_USER+2) + AcrylicBackdrop + ApplyTheme; no magnification/clipping (window ==
                          bar). Owned by App (created/closed per Settings.ShowMenuBar). See feature area below.
+  WindowPreview.cs       Hover preview flyout: live DWM thumbnails of an app's open windows, above its
+                         dock icon. A plain OPAQUE window (not a Popup, not AllowsTransparency) because
+                         DWM refuses to mirror into a layered window; Win11 rounded corners via
+                         DWMWA_WINDOW_CORNER_PREFERENCE. Reused across opens, cells laid out by
+                         arithmetic so the same numbers can be handed to DWM in physical px.
   ConfirmDialog.cs       Code-built Yes/No prompt with optional "Do not ask again".
   InputDialog.cs         Code-built single-line text prompt (OK/Cancel) — e.g. Rename.
   AppIcon.cs             The app's own icon loaded once: Large (256px png, windows/Alt-Tab) and
@@ -224,6 +229,9 @@ src/Dockable/
                          idObject==0 && idChild==0 "window itself" filter. All the WinEvent watchers
                          (MinimizeHook, ForegroundWatcher, TitleWatcher ×2,
                          Genie/WindowThumbnailCache) compose instances of it.
+    DwmThumbnail.cs      One live DWM window thumbnail (register/aspect-fit/unregister) — the taskbar's
+                         own preview mechanism, so it works for occluded AND minimized windows (a screen
+                         BitBlt of either grabs the occluder or nothing).
     StartMenu.cs         Open Start via a synthesized Win keypress (SynthesizedInput).
     QuickSettings.cs     Open the OS Quick Settings flyout (network/sound) via synthesized Win+A.
     Notifications.cs     Open the OS Notification Center / calendar flyout via synthesized Win+N.
@@ -577,6 +585,20 @@ src/Dockable/
   `FinishCurrent()` runs at the start of a new play to **finalize the in-flight one** (invoke its pending
   `onCompleted` so the previous window snaps to its tile and is freed from `_busy`) — otherwise the
   stomped animation's callback was lost and its tile stayed stuck in `_busy` (unresponsive).
+- **Hover previews** (`WindowPreview` + `Interop/DwmThumbnail`): hovering an app icon that has open
+  windows for `PreviewDwellMs` (450 ms) opens a flyout of LIVE window thumbnails above the dock window
+  (above the whole window, not the icon — magnified icons + hover labels overflow well past the bar);
+  clicking one raises that window, or restores it with the reverse warp when the dock holds it
+  minimized (`ActivateWindow`; a secondary dock forwards to `App.MainDock`, which owns minimize
+  tracking). Capped at 5 cells. Both the dwell check and the close poll (`PreviewWatchMs`, 150 ms) are
+  **geometry-driven** (`IsCursorOverItem` + `WindowPreview.ContainsCursor`) for the usual reason plus a
+  new one: the flyout is a separate window, so WPF sees no leave event for the gap between them —
+  and closing needs 2 consecutive away-ticks or the cursor gets cut off mid-transit. The flyout counts
+  as auto-hide activity, and any mouse-down on an icon closes it.
+- **Stale representations are polled away** (`PruneStaleMinimized`, from the 1 s tick, main dock only):
+  any tracked window that is gone (`!IsWindow` — an app closing while minimized raises no event we hook,
+  so its tile used to linger until clicked) or no longer iconic (a missed `EVENT_SYSTEM_MINIMIZEEND`)
+  has its tile / `_iconMinimized` entry dropped. `_busy`-guarded so an in-flight warp isn't pruned.
 - **External restore sync:** `MinimizeHook` also raises `WindowUnminimized` on `EVENT_SYSTEM_MINIMIZEEND`;
   when a tracked window is restored by the taskbar/Alt+Tab/the app itself, `OnWindowUnminimized` drops the
   now-stale tile/tracking (no reverse warp — transitions are suppressed so the OS restore is instant,
@@ -626,7 +648,7 @@ src/Dockable/
   restore); `_busy` set guards re-entrancy. Rough edges: minimizes that fall through to the reactive
   path (taskbar/menu/programmatic, or custom title bars the button-hit-test misses) can still flash the
   OS animation briefly; DRM/protected windows capture black; pre-minimized/elevated windows have no
-  thumbnail (app icon stands in); stale tiles if an app closes while minimized (needs a destroy hook);
+  thumbnail (app icon stands in); 
   multi-monitor genie target approximate.
 
 ### macOS-style menu bar (top AppBar) — on by default (opt-out)
@@ -1008,6 +1030,7 @@ Phases 1–3 + polish implemented:
   real **SVG icon rendering** (SharpVectors); Downloads seeded on first run.
 - **Auto-hide the dock** (`AutoHideDock`): slide off the edge when idle, reveal on a 2px edge
   sliver, AppBar reservation released throughout.
+- **Hover previews**: live DWM thumbnails of an app's windows above its icon, click to raise/restore.
 - **Launch/attention bounce**: one hop on open, 3 hops on a taskbar attention flash (shell hook);
   icon-only transform so the running dot stays put.
 - **Windows 11-style context menus** app-wide (`Themes/ModernMenu.xaml`), theme-aware; macOS-style
@@ -1017,7 +1040,7 @@ Phases 1–3 + polish implemented:
 
 Likely next work / open TODOs: implement the non-Bottom **Position on screen** edges; exact
 secondary-monitor placement; suppress the running dot for an app whose only window is minimized (vs.
-its tile); auto-remove stale minimized tiles on app close (EVENT_OBJECT_DESTROY hook); UWP/Store pin
+its tile); UWP/Store pin
 matching; reclaim work-area space when the taskbar is hidden; tune blind animation/size constants per
 user feedback.
 
