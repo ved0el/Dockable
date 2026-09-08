@@ -3879,9 +3879,12 @@ public partial class DockWindow : Window
         // New Window: launch another instance of the app (most apps open a fresh window).
         MenuBuilder.AddItem(menu, Loc.T("Menu_NewWindow"), () => ShortcutService.Launch(app.LaunchPath));
 
-        // Rename / Change Icon: customize a pinned shortcut's label (PinNames) or icon (a user
-        // .png/.svg imported into the AppData icon cache, persisted via PinIcons).
-        if (app.IsPinned)
+        // Rename / Change Icon: customize the app's label (PinNames) or icon (a user .png/.svg imported
+        // into the AppData icon cache, persisted via PinIcons). Offered for any app with a launch path
+        // to key them off, PINNED OR NOT — both maps are keyed by launch path and already applied to
+        // every tile (DockViewModel applies CustomIconPathFor / RecordedPinName on creation), and a
+        // running-but-unpinned app is exactly the case that has no other way to fix a bad icon.
+        if (!string.IsNullOrEmpty(app.LaunchPath))
         {
             MenuBuilder.AddItem(menu, Loc.T("Menu_Rename"), () => RenamePin(app));
             MenuBuilder.AddItem(menu, Loc.T("Menu_ChangeIcon"), () => ChangePinIcon(app));

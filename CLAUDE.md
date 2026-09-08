@@ -221,6 +221,14 @@ src/Dockable/
     FolderContents.cs    A pinned folder's sorted top-level listing (+ shell "Kind" names via SHGetFileInfo).
     StackIcon.cs         Composites a folder's top items into the Stack tile bitmap.
     SvgIcon.cs           Renders .svg/.svgz to icons via SharpVectors (hooked into LoadIconAsync).
+    PackagedApp.cs       MSIX/Store apps: reads AppxManifest.xml once per exe (cached, also keyed by
+                         AUMID) for the launchable AUMID and the app's Square44x44Logo. LargestLogo()
+                         returns the biggest UNPLATED asset on disk (unqualified / scale-* /
+                         *_altform-unplated — a plain targetsize-* can have the logo baked onto a solid
+                         square) so LoadIcon can read the artwork at its NATIVE size: the shell scales
+                         whatever it picks to the size requested, and many packages ship nothing near
+                         256 (Teams' app-list art is 176px), so going through it upscales and WPF then
+                         shrinks that again — the aliasing those tiles used to show.
   Interop/
     SynthesizedInput.cs  Shared SendInput chord helper (press in order, release in reverse) behind the
                          four OS-gesture openers below.
@@ -403,10 +411,15 @@ src/Dockable/
 - **Pins are dock-owned** (`DockSettings.PinnedApps`), **seeded once** from the real taskbar order on
   first run, then owned by the dock. Drag a pin to reorder (`MovePin`); drag-and-hold-steady to remove
   (`UnpinApp`, see Live drag); drop an external Explorer file to pin (`PinApp`, via `OnDrop`);
-  right-click → Unpin (`UnpinApp`); a pinned shortcut's right-click also offers Rename (label →
-  `PinNames`) and **Change Icon… / Reset Icon** (a .png/.svg picked in a file dialog → imported into
+  right-click → Unpin (`UnpinApp`); **any app tile with a launch path** — pinned or just running —
+  also offers Rename (label → `PinNames`) and **Change Icon… / Reset Icon** (a .png/.svg picked in a
+  file dialog → imported into
   the `PinIconCache`, mapped in `PinIcons`, applied via `DockItemViewModel.CustomIconPath` which
-  short-circuits `LoadIconAsync` before extraction; the Start tile and the Dock Preferences tile
+  short-circuits `LoadIconAsync` before extraction). Both maps are keyed by launch path and applied
+  to every tile on creation, so they never needed the pin; a running-but-unpinned app is exactly the
+  case with no other way to fix a bad icon. `IdentifyWindow` therefore consults `RecordedPinName` for
+  running apps too — otherwise the 1 s refresh would overwrite a rename on the next tick. The Start
+  tile and the Dock Preferences tile
   offer the same Change/Reset Icon menu — Start under the `dockable://start` sentinel key, reset
   returning to the vector glyph / bundled Preferences glyph). **The Windows taskbar is never modified** — Windows blocks
   programmatic taskbar pin/reorder (verb removed since Win10; Explorer owns the `Taskband\Favorites`

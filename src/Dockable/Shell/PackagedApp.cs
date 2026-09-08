@@ -30,9 +30,19 @@ internal static class PackagedApp
     private const string StoreFolder = @"\WindowsApps\";
     private const string ManifestName = "AppxManifest.xml";
 
+    /// <summary>What one read of a package's manifest told us about an app: how to launch it
+    /// (<paramref name="Aumid"/>) and where its icon artwork lives.</summary>
+    /// <param name="LogoBase">The manifest's <c>Square44x44Logo</c> value — a LOGICAL path
+    /// (<c>Images\Foo.png</c>); the files on disk are its scale-/targetsize-qualified variants.</param>
+    private sealed record PackagedInfo(string Aumid, string ManifestDir, string? LogoBase);
+
     // A package's manifest can't change without a reinstall, so this is cached for the process
     // lifetime. Null is cached too — most exes aren't packaged and we don't want to re-walk for them.
-    private static readonly ConcurrentDictionary<string, string?> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, PackagedInfo?> Cache = new(StringComparer.OrdinalIgnoreCase);
+
+    // The same entries keyed by AUMID, so an icon load can find the artwork from a
+    // "shell:AppsFolder\<aumid>" path (what a running packaged app's tile carries) without re-walking.
+    private static readonly ConcurrentDictionary<string, PackagedInfo> ByAumid = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Whether the path sits inside a packaged-app (<c>WindowsApps</c>) folder.</summary>
     internal static bool IsPackagedPath(string? path)
@@ -43,9 +53,9 @@ internal static class PackagedApp
     /// isn't a packaged app or its manifest can't be read (callers then keep using the raw path).
     /// </summary>
     internal static string? AumidForExe(string? exePath)
-        => string.IsNullOrEmpty(exePath) ? null : Cache.GetOrAdd(exePath, Resolve);
+        => string.IsNullOrEmpty(exePath) ? null : Cache.GetOrAdd(exePath, Resolve)?.Aumid;
 
-    private static string? Resolve(string exePath)
+    private static PackagedInfo? Resolve(string exePath)
     {
         // Tested in here rather than at the entry point so EVERY path is cached after first sight —
         // this runs per-window on the 1 s refresh, which CLAUDE.md keeps free of per-tick work.
@@ -70,11 +80,104 @@ internal static class PackagedApp
                       ?? apps.FirstOrDefault(IsVisible);
 
             string? id = (string?)app?.Attribute("Id");
-            return string.IsNullOrEmpty(id) ? null : family + "!" + id;
+            if (string.IsNullOrEmpty(id))
+                return null;
+
+            var info = new PackagedInfo(family + "!" + id, manifestDir, LogoBaseOf(app!));
+            ByAumid[info.Aumid] = info;
+            return info;
         }
         catch
         {
             return null; // unreadable/unexpected manifest — the caller falls back to the raw path
+        }
+    }
+
+    // Square44x44Logo is the app-list artwork (the icon Explorer and the taskbar show), declared on
+    // the app's VisualElements element — whose namespace prefix varies by schema version.
+    private static string? LogoBaseOf(XElement app)
+        => app.Elements().Where(e => e.Name.LocalName == "VisualElements")
+              .Select(e => (string?)e.Attribute("Square44x44Logo"))
+              .FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+
+    /// <summary>
+    /// The packaged app's largest icon asset ON DISK for <paramref name="path"/> — either a
+    /// <c>WindowsApps</c> exe or a <c>shell:AppsFolder\{aumid}</c> parsing name — or null when it isn't
+    /// a packaged app we've resolved, or ships no readable artwork.
+    /// </summary>
+    /// <remarks>
+    /// Worth bypassing the shell for: <c>IShellItemImageFactory</c> SCALES the asset it picks to the size
+    /// asked for, and plenty of packages top out below 256px (Teams' app-list art is 176px at its
+    /// largest), so requesting 256 returns an upscale that WPF then shrinks again into the icon cell —
+    /// two resamples, visibly aliased. Reading the file gives the artwork at its native size for a
+    /// single, high-quality resample.
+    /// </remarks>
+    internal static string? LargestLogo(string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return null;
+
+        // ponytail: an AppsFolder pin saved in a previous session is cold until the app runs once (or is
+        // pinned by exe path) — the caller then keeps the shell's upscale. Warming it would mean
+        // enumerating WindowsApps, which a non-admin can't do.
+        var info = path.StartsWith(AppsFolderPrefix, StringComparison.OrdinalIgnoreCase)
+            ? ByAumid.GetValueOrDefault(path[AppsFolderPrefix.Length..])
+            : Cache.GetOrAdd(path, Resolve);
+        if (info?.LogoBase is null)
+            return null;
+
+        try
+        {
+            // "Images\Foo.png" is logical: the real files are "Images\Foo.scale-400.png",
+            // "Images\Foo.targetsize-96_altform-unplated.png", … Only unqualified, scale-* and
+            // *_altform-unplated variants are considered — a plain targetsize-* can be PLATED (the logo
+            // baked onto a solid square), which is exactly what the shell's SIIGBF_ICONONLY avoids.
+            string dir = Path.Combine(info.ManifestDir, Path.GetDirectoryName(info.LogoBase) ?? string.Empty);
+            string stem = Path.GetFileNameWithoutExtension(info.LogoBase);
+            if (!Directory.Exists(dir))
+                return null;
+
+            string? best = null;
+            int bestWidth = 0;
+            foreach (string file in Directory.EnumerateFiles(dir, stem + "*.png"))
+            {
+                // The glob is a prefix match, so require what follows the stem to be a qualifier list
+                // ("<stem>.scale-400") and not a longer name that merely starts the same way
+                // ("<stem>Extra.scale-400" is a DIFFERENT asset).
+                string qualifiers = Path.GetFileNameWithoutExtension(file)[stem.Length..];
+                if (qualifiers.Length != 0 && qualifiers[0] != '.')
+                    continue;
+                bool usable = qualifiers.Length == 0
+                    || qualifiers.Contains(".scale-", StringComparison.OrdinalIgnoreCase)
+                    || qualifiers.Contains("altform-unplated", StringComparison.OrdinalIgnoreCase);
+                if (!usable)
+                    continue;
+
+                int width = PixelWidth(file);
+                if (width > bestWidth)
+                    (best, bestWidth) = (file, width);
+            }
+            return best;
+        }
+        catch
+        {
+            return null; // unreadable asset folder — the caller falls back to the shell
+        }
+    }
+
+    /// <summary>A PNG's width without decoding its pixels (header read only); 0 if unreadable.</summary>
+    private static int PixelWidth(string file)
+    {
+        try
+        {
+            return System.Windows.Media.Imaging.BitmapFrame.Create(
+                new Uri(file),
+                System.Windows.Media.Imaging.BitmapCreateOptions.DelayCreation,
+                System.Windows.Media.Imaging.BitmapCacheOption.None).PixelWidth;
+        }
+        catch
+        {
+            return 0;
         }
     }
 

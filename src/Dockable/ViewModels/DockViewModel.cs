@@ -687,14 +687,18 @@ public sealed partial class DockViewModel : ObservableObject
         // report "MSTeams_8wekyb3d8bbwe!MSTeams.Work", which isn't a registered app id, so
         // shell:AppsFolder couldn't resolve it — the tile got no icon and fell back to naming itself
         // after the raw window title.
+        // A remembered name (Rename) wins over the derived one for RUNNING apps too, not just pins —
+        // the rename menu is offered for both, and without this the 1 s refresh would overwrite the
+        // new label on the next tick.
         string aumid = PackagedApp.AumidForExe(w.ExePath) ?? w.Aumid;
         if (TaskbarApps.IsPackagedAumid(aumid))
         {
             string launchPath = PackagedApp.AppsFolderPrefix + aumid;
-            return ("uwp:" + aumid.ToLowerInvariant(), AumidDisplayName(aumid, w.Title), launchPath);
+            string name = RecordedPinName(launchPath) ?? AumidDisplayName(aumid, w.Title);
+            return ("uwp:" + aumid.ToLowerInvariant(), name, launchPath);
         }
         if (!string.IsNullOrEmpty(w.ExePath))
-            return (w.ExePath.ToLowerInvariant(), SafeName(w.ExePath), w.ExePath);
+            return (w.ExePath.ToLowerInvariant(), RecordedPinName(w.ExePath) ?? SafeName(w.ExePath), w.ExePath);
 
         string id = string.IsNullOrEmpty(w.Aumid) ? w.Title : w.Aumid;
         return ("win:" + id.ToLowerInvariant(), w.Title, string.Empty); // empty launch path → window icon
