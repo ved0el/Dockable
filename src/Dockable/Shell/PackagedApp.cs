@@ -102,8 +102,8 @@ internal static class PackagedApp
 
     /// <summary>
     /// The packaged app's largest icon asset ON DISK for <paramref name="path"/> — either a
-    /// <c>WindowsApps</c> exe or a <c>shell:AppsFolder\{aumid}</c> parsing name — or null when it isn't
-    /// a packaged app we've resolved, or ships no readable artwork.
+    /// <c>WindowsApps</c> exe or a <c>shell:AppsFolder\{aumid}</c> parsing name — with its pixel width,
+    /// or null when it isn't a packaged app we've resolved, or ships no readable artwork.
     /// </summary>
     /// <remarks>
     /// Worth bypassing the shell for: <c>IShellItemImageFactory</c> SCALES the asset it picks to the size
@@ -112,7 +112,7 @@ internal static class PackagedApp
     /// two resamples, visibly aliased. Reading the file gives the artwork at its native size for a
     /// single, high-quality resample.
     /// </remarks>
-    internal static string? LargestLogo(string? path)
+    internal static (string File, int Width)? LargestLogo(string? path)
     {
         if (string.IsNullOrEmpty(path))
             return null;
@@ -157,7 +157,7 @@ internal static class PackagedApp
                 if (width > bestWidth)
                     (best, bestWidth) = (file, width);
             }
-            return best;
+            return best is null ? null : (best, bestWidth);
         }
         catch
         {

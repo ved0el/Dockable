@@ -216,13 +216,17 @@ public static class ShortcutService
         }
 
         // A packaged (MSIX) app keeps its real icon in the manifest's PNG assets, not in the exe's PE
-        // resource. Read the largest of those assets DIRECTLY rather than asking the shell for it: the
-        // shell scales whatever asset it picks to the size requested, and plenty of packages ship
-        // nothing near 256px (Teams' app-list artwork is 176px at its largest), so the 256 we ask for
-        // comes back upscaled — and WPF then shrinks that upscale into the icon cell. Two resamples is
-        // what makes those tiles look aliased. Handles both shapes of packaged path: a WindowsApps exe,
-        // and the "shell:AppsFolder\{aumid}" a running packaged app's tile carries.
-        if (PackagedApp.LargestLogo(path) is { } logo && LoadPngNative(logo) is { } art)
+        // resource. When the biggest of those assets is SMALLER than what we're asking for, read it
+        // directly instead of going through the shell: the shell scales the asset it picks up to the
+        // requested size, and plenty of packages ship nothing near 256px (Teams' app-list artwork is
+        // 176px at its largest), so the 256 comes back upscaled — and WPF then shrinks that upscale
+        // into the icon cell. Two resamples is what makes those tiles look aliased.
+        // Only the upscale is worth undoing, same as the PE-resource path: when the asset is BIGGER
+        // than requested the shell's downsample is fine, and loading the original would mean holding a
+        // 1024px bitmap for a 20 DIP overlay badge. Handles both shapes of packaged path — a
+        // WindowsApps exe, and the "shell:AppsFolder\{aumid}" a running packaged app's tile carries.
+        if (PackagedApp.LargestLogo(path) is { } logo && logo.Width < pixelSize
+            && LoadPngNative(logo.File) is { } art)
             return art;
 
         // No readable asset (or a pin whose package we haven't resolved yet) — point the shell at the

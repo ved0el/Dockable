@@ -225,10 +225,13 @@ src/Dockable/
                          AUMID) for the launchable AUMID and the app's Square44x44Logo. LargestLogo()
                          returns the biggest UNPLATED asset on disk (unqualified / scale-* /
                          *_altform-unplated — a plain targetsize-* can have the logo baked onto a solid
-                         square) so LoadIcon can read the artwork at its NATIVE size: the shell scales
-                         whatever it picks to the size requested, and many packages ship nothing near
-                         256 (Teams' app-list art is 176px), so going through it upscales and WPF then
-                         shrinks that again — the aliasing those tiles used to show.
+                         square) with its pixel width. LoadIcon reads that file at its NATIVE size when
+                         it is SMALLER than the size requested: the shell scales whatever it picks up to
+                         the request, and many packages ship nothing near 256 (Teams' app-list art is
+                         176px), so going through it upscales and WPF then shrinks that again — the
+                         aliasing those tiles used to show. Assets BIGGER than the request keep going
+                         through the shell (same upscale-only rule as the PE path; avoids holding a
+                         1024px bitmap for a 20 DIP badge).
   Interop/
     SynthesizedInput.cs  Shared SendInput chord helper (press in order, release in reverse) behind the
                          four OS-gesture openers below.
