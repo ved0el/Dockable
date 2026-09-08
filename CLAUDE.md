@@ -218,6 +218,11 @@ src/Dockable/
     ShortcutService.cs   Launch(path) via shell; RevealInExplorer; LoadIconAsync
                          (IShellItemImageFactory → 256px, alpha-correct, off UI thread, E_PENDING retry;
                          pixels read via GetDIBits with an explicit top-down target — see Known decisions).
+                         Exes go through PrivateExtractIcons, which STRETCHES the frame it picks up to the
+                         requested size — so `NativeIconWidth` reads the chosen RT_ICON's real width
+                         (piconid → LoadLibraryEx AS_DATAFILE → FindResource; PNG IHDR or BITMAPINFOHEADER)
+                         and re-extracts at that size when it's SMALLER. One WPF resample instead of a GDI
+                         upscale plus a WPF downscale. Downscales are left alone (real detail, not a blur).
     FolderContents.cs    A pinned folder's sorted top-level listing (+ shell "Kind" names via SHGetFileInfo).
     StackIcon.cs         Composites a folder's top items into the Stack tile bitmap.
     SvgIcon.cs           Renders .svg/.svgz to icons via SharpVectors (hooked into LoadIconAsync).
