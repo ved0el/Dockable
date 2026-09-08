@@ -229,3 +229,11 @@ DwmUnregisterThumbnail
 DwmUpdateThumbnailProperties
 DwmQueryThumbnailSourceSize
 DWM_THUMBNAIL_PROPERTIES
+
+// --- Icon sharpness: read an icon frame's NATIVE size from the module's RT_ICON resource, so we
+//     extract at that size instead of letting PrivateExtractIcons stretch a small frame up ---
+LoadLibraryEx
+FindResource
+LoadResource
+LockResource
+SizeofResource

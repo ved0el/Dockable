@@ -337,11 +337,34 @@ public static class ShortcutService
     /// <summary>Extracts a single icon at a given index/size from an .exe/.dll/.ico via the shell.</summary>
     private static unsafe ImageSource? ExtractIconAtIndex(string file, int index, int pixelSize)
     {
-        uint extracted = PInvoke.PrivateExtractIcons(file, index, pixelSize, pixelSize, out var hicon, null, 1, 0);
+        uint iconId = 0;
+        uint extracted = PInvoke.PrivateExtractIcons(file, index, pixelSize, pixelSize, out var hicon, &iconId, 1, 0);
         try
         {
             if (extracted == 0 || hicon is null || hicon.IsInvalid)
                 return null;
+
+            // PrivateExtractIcons STRETCHES the frame it picked up to the size we asked for. Asking for
+            // 256 from an app whose largest frame is 48 therefore hands back a GDI-blurred upscale, which
+            // WPF then shrinks AGAIN into the icon cell — two resamples, visibly soft, and no
+            // BitmapScalingMode can undo the first. Re-extract at the frame's NATIVE size instead and let
+            // WPF do the single (high-quality) resample. Measured: brave.exe asked for 64 returns its 48px
+            // frame stretched to 64. Only the upscale is worth undoing — when the native frame is BIGGER
+            // than we asked for, the shell already downsampled real detail, so leave that path alone.
+            int native = NativeIconWidth(file, iconId);
+            if (native > 0 && native < pixelSize)
+            {
+                uint got = PInvoke.PrivateExtractIcons(file, index, native, native, out var nativeIcon, null, 1, 0);
+                if (got != 0 && nativeIcon is { IsInvalid: false })
+                {
+                    hicon.Dispose();
+                    hicon = nativeIcon;
+                }
+                else
+                {
+                    nativeIcon?.Dispose();
+                }
+            }
 
             var source = System.Windows.Interop.Imaging.CreateBitmapSourceFromHIcon(
                 hicon.DangerousGetHandle(), Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
@@ -356,6 +379,61 @@ public static class ShortcutService
         finally
         {
             hicon?.Dispose(); // the SafeHandle owns the HICON and DestroyIcon's it
+        }
+    }
+
+    /// <summary>RT_ICON, as a MAKEINTRESOURCE-style resource type.</summary>
+    private const uint RtIcon = 3;
+
+    /// <summary>
+    /// The native pixel width of the RT_ICON frame <paramref name="iconId"/> inside
+    /// <paramref name="file"/>'s resources — the id <c>PrivateExtractIcons</c> reports as the frame it
+    /// chose. 0 when it can't be read (an .ico file rather than a PE module, a packed/protected exe, a
+    /// malformed frame), in which case the caller keeps the size it already extracted.
+    /// </summary>
+    private static unsafe int NativeIconWidth(string file, uint iconId)
+    {
+        if (iconId == 0)
+            return 0;
+
+        FreeLibrarySafeHandle? module = null;
+        try
+        {
+            // AS_DATAFILE: map the resources only — never run the target's DllMain just to size an icon.
+            module = PInvoke.LoadLibraryEx(
+                file, Windows.Win32.System.LibraryLoader.LOAD_LIBRARY_FLAGS.LOAD_LIBRARY_AS_DATAFILE);
+            if (module is null || module.IsInvalid)
+                return 0;
+
+            // The MAKEINTRESOURCE forms need a raw PCWSTR, so go through the HMODULE overloads.
+            var hmod = (HMODULE)module.DangerousGetHandle();
+            HRSRC res = PInvoke.FindResource(hmod, new PCWSTR((char*)iconId), new PCWSTR((char*)RtIcon));
+            if (res.IsNull)
+                return 0;
+
+            uint size = PInvoke.SizeofResource(hmod, res);
+            void* bits = PInvoke.LockResource(PInvoke.LoadResource(hmod, res));
+            if (bits is null || size < 24)
+                return 0;
+
+            byte* p = (byte*)bits;
+            // A Vista+ 256px frame is stored as a whole PNG: its IHDR width is a big-endian DWORD at 16.
+            if (p[0] == 0x89 && p[1] == (byte)'P' && p[2] == (byte)'N' && p[3] == (byte)'G')
+                return (p[16] << 24) | (p[17] << 16) | (p[18] << 8) | p[19];
+
+            // Otherwise a BITMAPINFOHEADER: biWidth at offset 4. (biHeight is doubled by the AND mask,
+            // so the width is the only trustworthy dimension here — icon frames are square anyway.)
+            int width = *(int*)(p + 4);
+            return width is > 0 and <= 1024 ? width : 0;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Dockable] Native icon size probe failed for '{file}' [{iconId}]: {ex.Message}");
+            return 0;
+        }
+        finally
+        {
+            module?.Dispose();
         }
     }
 
