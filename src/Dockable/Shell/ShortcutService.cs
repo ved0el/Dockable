@@ -216,8 +216,21 @@ public static class ShortcutService
         }
 
         // A packaged (MSIX) app keeps its real icon in the manifest's PNG assets, not in the exe's PE
-        // resource — extracting from the exe yields a placeholder or the wrong artwork. Point the shell
-        // at the AppsFolder item instead (and skip the exe fast-path below).
+        // resource. When the biggest of those assets is SMALLER than what we're asking for, read it
+        // directly instead of going through the shell: the shell scales the asset it picks up to the
+        // requested size, and plenty of packages ship nothing near 256px (Teams' app-list artwork is
+        // 176px at its largest), so the 256 comes back upscaled — and WPF then shrinks that upscale
+        // into the icon cell. Two resamples is what makes those tiles look aliased.
+        // Only the upscale is worth undoing, same as the PE-resource path: when the asset is BIGGER
+        // than requested the shell's downsample is fine, and loading the original would mean holding a
+        // 1024px bitmap for a 20 DIP overlay badge. Handles both shapes of packaged path — a
+        // WindowsApps exe, and the "shell:AppsFolder\{aumid}" a running packaged app's tile carries.
+        if (PackagedApp.LargestLogo(path) is { } logo && logo.Width < pixelSize
+            && LoadPngNative(logo.File) is { } art)
+            return art;
+
+        // No readable asset (or a pin whose package we haven't resolved yet) — point the shell at the
+        // AppsFolder item instead of the exe, which would yield a placeholder or the wrong artwork.
         if (PackagedApp.AumidForExe(path) is { } packagedAumid)
             path = PackagedApp.AppsFolderPrefix + packagedAumid;
 
@@ -330,6 +343,30 @@ public static class ShortcutService
         catch (Exception ex)
         {
             Debug.WriteLine($"[Dockable] .url icon resolve failed for '{urlPath}': {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Loads a PNG at its NATIVE pixel size, frozen so the UI thread can use it. No requested size:
+    /// the whole point is to hand WPF the artwork unscaled and let it do the one resample it's good at.
+    /// </summary>
+    private static ImageSource? LoadPngNative(string file)
+    {
+        try
+        {
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.UriSource = new Uri(file);
+            bmp.CacheOption = BitmapCacheOption.OnLoad; // decode + release the file here, on the worker thread
+            bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+            bmp.EndInit();
+            bmp.Freeze();
+            return bmp;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Dockable] Packaged logo load failed for '{file}': {ex.Message}");
             return null;
         }
     }
