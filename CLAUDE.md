@@ -223,6 +223,11 @@ src/Dockable/
                          (piconid → LoadLibraryEx AS_DATAFILE → FindResource; PNG IHDR or BITMAPINFOHEADER)
                          and re-extracts at that size when it's SMALLER. One WPF resample instead of a GDI
                          upscale plus a WPF downscale. Downscales are left alone (real detail, not a blur).
+                         Every icon then goes through `TrimToArtwork` (see the magnification notes):
+                         cropped to its opaque bounds via CroppedBitmap — a view, so no extra resample —
+                         so a fat transparent margin can't make one app render smaller than the next.
+                         Icons already drawn edge-to-edge come back untouched. Window CAPTURES never
+                         pass through here, so minimized thumbnails keep their full frame.
     FolderContents.cs    A pinned folder's sorted top-level listing (+ shell "Kind" names via SHGetFileInfo).
     StackIcon.cs         Composites a folder's top items into the Stack tile bitmap.
     SvgIcon.cs           Renders .svg/.svgz to icons via SharpVectors (hooked into LoadIconAsync).
@@ -355,6 +360,12 @@ src/Dockable/
   displacement; bottom-anchored growth. Each cell advances by `baseSize*scale`; the **icon renders
   at `IconFill` (0.84) of its cell**, centered, so icons sit smaller within the bar. Thin bar; icons
   overflow above it. `Recompute()` sets window/bar geometry on item/settings changes.
+  - **`IconFill` only means one size because icons are trimmed to their artwork first**
+    (`ShortcutService.TrimToArtwork`, on the `LoadIconAsync` funnel). `Stretch="Uniform"` fits the
+    whole BITMAP, and Windows icons disagree wildly about their transparent margin — measured: .exe
+    artwork fills 100% of its canvas, MSIX app-list assets ~70% (Teams 70.5%, Windows Terminal
+    72.7%), so packaged apps used to render ~30% smaller than the pins beside them. Don't add a
+    second size constant to "fix" a mismatch; the trim is what keeps them equal.
   - **Hover is geometry-driven, not WPF `MouseLeave`.** `MouseEnter` (reliable on the opaque bar) kicks
     the loop off, but each frame recomputes `_hovering` from the real cursor (`GetCursorPos` →
     `PointFromScreen`, tested against the window footprint). On a transparent layered window the cursor
