@@ -117,7 +117,8 @@ public static class ShortcutService
     /// Extracts a window's own icon (its big/small icon, else its window-class icon) on a background
     /// thread — the fallback for apps whose executable we can't read (e.g. elevated, like Task Manager).
     /// </summary>
-    public static Task<ImageSource?> LoadWindowIconAsync(IntPtr hwnd) => Task.Run(() => LoadWindowIcon(hwnd));
+    public static Task<ImageSource?> LoadWindowIconAsync(IntPtr hwnd)
+        => Task.Run(() => TrimToArtwork(LoadWindowIcon(hwnd)));
 
     private static ImageSource? LoadWindowIcon(IntPtr hwnd)
     {
@@ -186,7 +187,86 @@ public static class ShortcutService
     /// Returns a frozen, cross-thread-usable bitmap, or null if extraction fails.
     /// </summary>
     public static Task<ImageSource?> LoadIconAsync(string path, int pixelSize)
-        => Task.Run(() => LoadIcon(path, pixelSize));
+        => Task.Run(() => TrimToArtwork(LoadIcon(path, pixelSize)));
+
+    /// <summary>
+    /// Alpha above which a pixel counts as artwork when measuring an icon's opaque bounds.
+    /// </summary>
+    // ponytail: measured across this machine's dock icons (.exe PE resources, MSIX assets, the
+    // bundled PNGs) every one reports an IDENTICAL box anywhere in 8..96 — none of them bakes a soft
+    // shadow out to its canvas edge — so this is not delicately tuned. Raise it if some icon ever
+    // does, which would show up as that icon refusing to trim.
+    private const byte ArtworkAlphaFloor = 16;
+
+    /// <summary>
+    /// Crops an icon down to the artwork it actually draws, so icons that ship with a fat transparent
+    /// margin come out the same size as ones drawn edge-to-edge.
+    /// </summary>
+    /// <remarks>
+    /// The dock fits each icon into its cell with <c>Stretch="Uniform"</c>, which fits the whole
+    /// BITMAP — margin included. Windows icons disagree wildly about that margin: measured here, .exe
+    /// artwork fills 100% of its canvas while MSIX app-list assets fill ~70% (Teams 70.5%, Windows
+    /// Terminal 72.7%), so packaged apps rendered visibly ~30% smaller than the pins beside them.
+    /// Cropping to the opaque bounds makes "the bitmap" mean "the artwork" for every source, and the
+    /// existing <c>IconFill</c> then sets ONE size for all of them — no second constant, and icons
+    /// that were already tight (every .exe measured) are returned untouched, so they don't move.
+    /// <para>
+    /// <see cref="CroppedBitmap"/> is a view over the same pixels, so this adds no resample on top of
+    /// the single scale WPF already does — which is the whole point of loading icons at native size.
+    /// </para>
+    /// Applies to icons only. Minimized-window thumbnails come from <c>Genie/WindowCapture</c> and
+    /// never pass through here — a screen capture has no margin to trim.
+    /// </remarks>
+    private static ImageSource? TrimToArtwork(ImageSource? source)
+    {
+        if (source is not BitmapSource bmp || bmp.PixelWidth <= 0 || bmp.PixelHeight <= 0)
+            return source;
+
+        try
+        {
+            // Read alpha in one known layout whatever produced the bitmap: Pbgra32 from the shell /
+            // HICON conversions, Bgra32 from a packaged PNG, anything at all from a user's own file.
+            BitmapSource argb = bmp;
+            if (bmp.Format != PixelFormats.Bgra32 && bmp.Format != PixelFormats.Pbgra32)
+            {
+                var converted = new FormatConvertedBitmap(bmp, PixelFormats.Bgra32, null, 0);
+                converted.Freeze();
+                argb = converted;
+            }
+
+            int w = argb.PixelWidth, h = argb.PixelHeight, stride = w * 4;
+            byte[] pixels = new byte[stride * h];
+            argb.CopyPixels(pixels, stride, 0);
+
+            int minX = w, minY = h, maxX = -1, maxY = -1;
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * stride;
+                for (int x = 0; x < w; x++)
+                {
+                    if (pixels[row + x * 4 + 3] <= ArtworkAlphaFloor)
+                        continue;
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+
+            // Fully transparent (a failed extraction) or already edge-to-edge — leave it alone.
+            if (maxX < 0 || (minX == 0 && minY == 0 && maxX == w - 1 && maxY == h - 1))
+                return source;
+
+            var cropped = new CroppedBitmap(argb, new Int32Rect(minX, minY, maxX - minX + 1, maxY - minY + 1));
+            cropped.Freeze();
+            return cropped;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Dockable] Icon trim failed: {ex.Message}");
+            return source; // an untrimmed icon is a size mismatch, not a missing icon
+        }
+    }
 
     private static unsafe ImageSource? LoadIcon(string path, int pixelSize)
     {
