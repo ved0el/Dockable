@@ -267,6 +267,7 @@ public partial class DockWindow : Window
             RefreshTaskbarApps();
             UpdateFullscreenState(); // backstop in case a fullscreen transition didn't raise an event
             CheckCaptureFriendlyExit(); // re-exclude the dock from capture once the Snipping Tool is gone
+            KeepOnTop();             // backstop: a tiling WM can push a window above us with no focus change
             if (!IsSecondary)
             {
                 PruneStaleMinimized();   // drop previews of windows that were closed while minimized
@@ -724,18 +725,38 @@ public partial class DockWindow : Window
         if (IsForegroundSnipApp())
             EnterCaptureFriendlyMode();
         UpdateFullscreenState();
-        if (StartMenu.IsOpen())
-            RaiseDockAboveStartMenu(); // Start menu just came forward — keep the dock above it
+        KeepOnTop(); // whatever just came forward (Start menu, a tiling-WM window) goes behind the dock
     }
 
-    /// <summary>Re-asserts the dock at the top of the topmost band (without stealing focus) so the
-    /// Windows Start menu appears behind it. Re-seats the acrylic backdrop just beneath the dock.</summary>
-    private void RaiseDockAboveStartMenu()
+    /// <summary>Re-asserts the dock at the top of the topmost band unless one of our own topmost
+    /// windows would end up buried behind it. Tiling window managers (komorebi &amp; co.) insert their
+    /// managed windows into the topmost band above us, which swallows dock clicks; the Start menu
+    /// does the same. Driven by foreground changes plus the 1 s tick as a backstop.</summary>
+    // ponytail: 1 Hz backstop. If that lags, the WH_MOUSE_LL hook in MinimizeInterceptHook already
+    // sees every global mouse move — a bar-rect test there would raise on approach instead.
+    private void KeepOnTop()
+    {
+        if (_hwnd == IntPtr.Zero || _busy.Count > 0 /* a minimize warp lands ON the bar */)
+            return;
+        // Our own topmost children overlap the dock and are inserted above it: Preferences/dialogs and
+        // the tray menu (own process foreground), context menus + custom drags (mouse capture), the
+        // fan/grid flyout (capture is released before it finishes closing) and the hover preview.
+        if (Fullscreen.IsForegroundOwnProcess(_ownProcessId) || Mouse.Captured is not null
+            || FanPopup.IsOpen || _preview?.IsVisible == true)
+            return;
+        RaiseToTop();
+    }
+
+    /// <summary>Puts the dock at the top of the topmost band without stealing focus, and re-seats the
+    /// acrylic backdrop just beneath it (else the backdrop stays under whatever we just jumped over,
+    /// and the translucent bar shows that window instead of the blur).</summary>
+    private void RaiseToTop()
     {
         if (_hwnd == IntPtr.Zero)
             return;
         PInvoke.SetWindowPos((HWND)_hwnd, new HWND(-1) /* HWND_TOPMOST */, 0, 0, 0, 0,
             SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
+        _haveSynced = false; // force the z-order re-seat: the bar's rect didn't change, only its depth
         SyncAcrylic();
     }
 
@@ -2902,7 +2923,7 @@ public partial class DockWindow : Window
         if (StartMenu.IsOpen())
         {
             _startSeen = true;            // Start is up — keep the taskbar hidden
-            RaiseDockAboveStartMenu();    // ...and keep the dock in front, so Start sits behind it
+            RaiseToTop();                 // ...and keep the dock in front, so Start sits behind it
             return;
         }
 
