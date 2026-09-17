@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
@@ -149,6 +149,16 @@ public partial class App : Application
         _dockWindow?.SetCaptureFriendly(on);
         foreach (var dock in _extraDocks)
             dock.SetCaptureFriendly(on);
+    }
+
+    /// <summary>Parks/resumes every display's Liquid Glass backdrop capturer while a minimize/restore
+    /// warp animates. Each dock runs its own capture thread, and they all upload through the one UI
+    /// thread the warp renders on — so a warp on display 1 has to quiet display 2's capturer too.</summary>
+    internal void SetDocksGlassSuspended(bool on)
+    {
+        _dockWindow?.SetGlassSuspended(on);
+        foreach (var dock in _extraDocks)
+            dock.SetGlassSuspended(on);
     }
 
     /// <summary>Queues the "shared settings changed" broadcast. Debounced because every Preferences

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Threading;
@@ -98,6 +98,15 @@ public sealed unsafe class BackdropCapturer : IDisposable
     /// <summary>Back to normal CAPTUREBLT capture (the dock's capture exclusion is being restored).</summary>
     public void ExitCaptureFriendly() => _friendly = (int)FriendlyState.Off;
 
+    /// <summary>Parks the loop on its last uploaded frame while a minimize/restore warp animates.
+    /// The warp repaints the whole screen every frame, so every grab diffs as changed and pushes a
+    /// full-screen upload onto the UI thread — exactly the thread the warp needs. The glass shows a
+    /// blurred backdrop for a few hundred ms, so holding the last frame is imperceptible. Cheap; safe
+    /// from any thread.</summary>
+    public bool Suspended { get => _suspended; set => _suspended = value; }
+
+    private volatile bool _suspended;
+
     public BackdropCapturer(Dispatcher ui, Action<byte[], int, int> upload, int fastFps, int idleFps,
         GlassProfiler? profiler)
     {
@@ -167,10 +176,11 @@ public sealed unsafe class BackdropCapturer : IDisposable
                 double t0 = sw.Elapsed.TotalMilliseconds;
                 double waitMs;
                 var friendly = (FriendlyState)_friendly;
-                if (friendly == FriendlyState.Frozen)
+                if (_suspended || friendly == FriendlyState.Frozen)
                 {
-                    // Parked on the last uploaded frame; just watch for the mode to end.
-                    waitMs = 250;
+                    // Parked on the last uploaded frame; just watch for the mode to end. A warp is short,
+                    // so poll faster than the capture-friendly park to resume promptly after it.
+                    waitMs = _suspended ? 40 : 250;
                 }
                 else if (friendly == FriendlyState.Probe)
                 {

@@ -1345,6 +1345,13 @@ public partial class DockWindow : Window
     // poll below still live on the main dock alone; only the state is fanned out.
     private void EnterCaptureFriendlyMode() => App.Current.SetDocksCaptureFriendly(true);
 
+    /// <summary>Parks/resumes this dock's backdrop capturer (see <see cref="BeginWarp"/>).</summary>
+    internal void SetGlassSuspended(bool on)
+    {
+        if (_backdropCapturer is not null)
+            _backdropCapturer.Suspended = on;
+    }
+
     /// <summary>Enters/leaves capture-friendly mode on this dock: the Liquid Glass capture exclusion is
     /// lifted (so the user's snip shows the dock) and the backdrop capturer stops refracting it.</summary>
     internal void SetCaptureFriendly(bool on)
@@ -2331,13 +2338,13 @@ public partial class DockWindow : Window
             onDone?.Invoke();
             return;
         }
-        _busy.Add(hwnd);
+        BeginWarp(hwnd);
 
         WindowControl.SuppressTransitions(hwnd); // future restore won't play the OS animation
 
         if (capture is null)
         {
-            _busy.Remove(hwnd);
+            EndWarp(hwnd);
             onDone?.Invoke();
             return;
         }
@@ -2395,7 +2402,7 @@ public partial class DockWindow : Window
             target = TileRestingScreenCenter(tile);
         }
         animator.TargetTileWidth = TileWidthOf(landing); // shrink the window down to the tile's width
-        animator.AnimateTo(target, reverse: false, onCompleted: () => { _busy.Remove(hwnd); onDone?.Invoke(); });
+        animator.AnimateTo(target, reverse: false, onCompleted: () => { EndWarp(hwnd); onDone?.Invoke(); });
     }
 
     /// <summary>Minimizes <paramref name="hwnd"/> and explicitly activates the next app window. SW_MINIMIZE
@@ -2535,7 +2542,7 @@ public partial class DockWindow : Window
             return;
         }
 
-        _busy.Add(hwnd);
+        BeginWarp(hwnd);
         WindowControl.SuppressTransitions(hwnd);
 
         var info = Monitors.ForWindow(hwnd);
@@ -2554,7 +2561,7 @@ public partial class DockWindow : Window
         {
             WindowControl.Restore(hwnd);
             DropMinimizedTracking(hwnd, tile);
-            _busy.Remove(hwnd);
+            EndWarp(hwnd);
             onDone();
         });
     }
@@ -2597,6 +2604,31 @@ public partial class DockWindow : Window
         var (left, top) = ComputePlacement();
         var (x, y) = ViewModel!.RestingCenterOf(tile);
         return new Point(left + x, top + y);
+    }
+
+    /// <summary>Marks a warp in flight and quiets everything that would compete with its frames: the
+    /// dock's own render loop (see <see cref="OnRendering"/>), the thumbnail cache's BitBlt, and every
+    /// display's Liquid Glass capturer. The capturers are the expensive one — each runs a full-screen
+    /// GDI grab plus a diff, and a warp repaints the whole screen every frame, so the diff never
+    /// short-circuits and each monitor pushes a full-screen upload onto the UI thread per frame.</summary>
+    private void BeginWarp(IntPtr hwnd)
+    {
+        if (_busy.Count == 0)
+            App.Current.SetDocksGlassSuspended(true);
+        _busy.Add(hwnd);
+        // A window can't warp into a dock that's slid off-screen: the warp aims at the tile's RESTING
+        // position (ComputePlacement ignores HideProgress), so an auto-hidden dock isn't there to land on.
+        if (_dockHidden)
+            SlideDock(hide: false);
+    }
+
+    /// <summary>Ends a warp, resuming the work <see cref="BeginWarp"/> quieted once the last one finishes
+    /// (concurrent minimizes — a Win+M cascade — share the overlay and overlap here).</summary>
+    private void EndWarp(IntPtr hwnd)
+    {
+        _busy.Remove(hwnd);
+        if (_busy.Count == 0)
+            App.Current.SetDocksGlassSuspended(false);
     }
 
     private void OnRendering(object? sender, EventArgs e)

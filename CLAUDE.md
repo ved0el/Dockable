@@ -325,9 +325,13 @@ src/Dockable/
                          window lifecycle, the render loop (frame-rate cap that NEVER skips the final
                          frame), FinishCurrent (finalize an in-flight play so its onCompleted isn't
                          lost), and the _playSeq-guarded restore hold. Subclasses supply
-                         BuildOverlayContent/SetContent/PreparePlay/ApplyFrame(rawT)/BaseDurationMs.
-                         ApplyFrame receives the RAW warp t — easing is the subclass's business
-                         (the genie eases per-vertex; Scale SmoothSteps the whole frame).
+                         BuildOverlayContent/SetContent/PreparePlay/ApplyFrame(warp)/BaseDurationMs.
+                         Owns the VELOCITY CURVE: `Emphasized` (front-loaded, zero velocity at both
+                         ends — between Apple's easeOut and Material 3's "emphasized") is applied to
+                         PROGRESS and then mirrored for a restore, never the other way round (mirroring
+                         an eased value inverts the curve, so a restore would arrive at a hard stop).
+                         Restores run RestoreDurationFactor (1.15×) longer than minimizes. Subclasses
+                         SHAPE the eased warp (the genie's per-row stagger) and must not re-ease it.
     GenieAnimator.cs     WPF-3D mesh-warp subclass; Style = Suck or Genie curve; RefreshQuality
                          tears the overlay down so the next play rebuilds the mesh.
     ScaleAnimator.cs     Subclass that scales the capture down to the tile.
@@ -1013,6 +1017,15 @@ src/Dockable/
     already-projected bar top-left into `UpdateGlassClip(Point?)`. PublishGlassRect projects a
     DIFFERENT point — don't "unify" it. Non-per-frame code may keep calling
     `VisualTreeHelper.GetDpi` directly.
+  - **A warp in flight (`_busy`) quiets everything that competes for its frames** — routed through
+    `DockWindow.BeginWarp`/`EndWarp`, which are the only places `_busy` is mutated. They pause the
+    dock's own render loop (`OnRendering` early-returns), the thumbnail cache's BitBlt
+    (`ShouldSuspend`) and EVERY display's Liquid Glass capturer (`App.SetDocksGlassSuspended` →
+    `BackdropCapturer.Suspended`, which parks the thread on its last uploaded frame). The capturers
+    matter most: a warp repaints the whole screen every frame, so their diff never short-circuits and
+    each monitor pushes a full-screen upload onto the one UI thread the warp renders on. `BeginWarp`
+    also reveals an auto-hidden dock — the warp aims at the tile's RESTING position
+    (`ComputePlacement` ignores `HideProgress`), so a slid-off dock isn't there to land on.
   - **TaskbarApps.EnumerateAppWindows must stay cheap** — it runs every ~1 s plus on demand. Window
     identity (exe/AUMID) comes from `IdentityCache`; anything newly per-window-per-tick needs the
     same treatment. The dock's UIA/screen-reader names, minimize bookkeeping helpers

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -22,6 +22,11 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
 {
     /// <summary>Speed multiplier; &gt;1 shortens the duration (faster), &lt;1 lengthens it (slower).</summary>
     public double SpeedMultiplier { get; set; } = 1.0;
+
+    /// <summary>Restores run this much longer than minimizes. Both motion systems give an entrance
+    /// more time than the matching exit: the thing arriving is what the eye follows, while the thing
+    /// leaving has already been dismissed.</summary>
+    private const double RestoreDurationFactor = 1.15;
 
     /// <summary>Landed size at the dock (DIP); set from the actual tile width before each play.</summary>
     public double TargetTileWidth { get; set; } = 56;
@@ -62,9 +67,10 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
     /// (mesh invariants / the end scale).</summary>
     protected abstract void PreparePlay();
 
-    /// <summary>Renders one frame at raw warp <paramref name="warp"/> in [0,1] (0 = at source,
-    /// 1 = at the tile). Easing is the subclass's business (the genie eases per-vertex; the scale
-    /// effect SmoothSteps the whole frame).</summary>
+    /// <summary>Renders one frame at warp <paramref name="warp"/> in [0,1] (0 = at source, 1 = at
+    /// the tile), already carrying the <see cref="Emphasized"/> velocity curve. Subclasses SHAPE the
+    /// warp (the genie's per-row stagger), they don't re-ease it — easing an eased value compounds
+    /// the curve.</summary>
     protected abstract void ApplyFrame(double warp);
 
     /// <summary>Nominal duration (ms) before <see cref="SpeedMultiplier"/>; read per frame (the
@@ -162,9 +168,14 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
         if (_startTime == TimeSpan.Zero)
             _startTime = now;
 
-        double duration = BaseDurationMs / Math.Max(0.1, SpeedMultiplier);
+        double duration = BaseDurationMs * (_reverse ? RestoreDurationFactor : 1.0)
+            / Math.Max(0.1, SpeedMultiplier);
         double progress = Math.Min(1.0, (now - _startTime).TotalMilliseconds / duration);
-        double warp = _reverse ? 1.0 - progress : progress;
+        // Ease PROGRESS, then mirror — never mirror the eased value. Reversing an asymmetric curve
+        // inverts it (a decelerate becomes an accelerate), so a restore would arrive at a hard stop
+        // instead of settling. Both directions must decelerate into their landing.
+        double eased = Emphasized(progress);
+        double warp = _reverse ? 1.0 - eased : eased;
 
         // Frame-rate cap: skip this frame's work if we painted too recently — but never skip the final
         // frame, so the animation always lands and its completion callback runs.
@@ -305,4 +316,21 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
     }
 
     protected static double SmoothStep(double t) => t * t * (3 - 2 * t);
+
+    /// <summary>
+    /// The velocity curve both warps run on — the shape Apple's and Material 3's motion systems
+    /// converge on for an object travelling to a target: zero velocity at both ends (no lurch, no
+    /// hard stop), travel front-loaded so most of the distance is covered early, then a long
+    /// decelerating settle. Measured against both references it sits between them — it tracks Apple's
+    /// <c>easeOut</c> (<c>cubic-bezier(.25,.1,.25,1)</c>) through the first half and Material 3's
+    /// "emphasized" (<c>cubic-bezier(.2,0,0,1)</c>) through the second (both ≈0.88 of the distance at
+    /// the half-way mark) — built by skewing the symmetric smoothstep rather than solving a bezier.
+    /// <para>The symmetric <see cref="SmoothStep"/> this replaced spent half the time on each half of
+    /// the distance, which reads as a sluggish start and an abrupt arrival.</para>
+    /// </summary>
+    protected static double Emphasized(double t)
+    {
+        double s = 1 - SmoothStep(t);
+        return 1 - s * s * s;
+    }
 }

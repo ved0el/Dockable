@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -57,12 +57,11 @@ public sealed class ScaleAnimator : OverlayAnimatorBase
     protected override void PreparePlay()
         => _endScale = Math.Clamp(TargetTileWidth / Math.Max(Src.Width, 1), 0.04, 0.25);
 
-    // warp: 0 = full window at source, 1 = shrunk onto the dock tile. The base hands the RAW warp;
-    // the scale effect eases the whole frame here (SmoothStep is exact at 0 and 1, so the base's
-    // first-frame ApplyFrame(0/1) calls land identically).
+    // warp: 0 = full window at source, 1 = shrunk onto the dock tile. The base already applied the
+    // velocity curve, so this maps it straight through — re-easing here would compound the two.
     protected override void ApplyFrame(double warp)
     {
-        double t = SmoothStep(warp);
+        double t = warp;
 
         double s = 1.0 + (_endScale - 1.0) * t;
         _scale!.ScaleX = s;
