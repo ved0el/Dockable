@@ -26,29 +26,21 @@ public sealed class GenieAnimator : OverlayAnimatorBase
     public enum GenieStyle { Suck, Genie }
 
     /// <summary>Per-style curve parameters.</summary>
-    /// <param name="Stagger">How far the leading rows run ahead of the trailing ones (the flow).</param>
-    /// <param name="TargetWidth">Neck/point width at full warp (DIP).</param>
-    /// <param name="WidthBulge">Mid-neck width bulge as a fraction of the source width (negative pinches).</param>
-    /// <param name="Duration">Animation length in ms.</param>
-    /// <param name="ShapeEnd">Local-progress point by which the horizontal funnel/pinch is complete
-    /// (&lt;1 front-loads the distortion). 1.0 = horizontal tracks the descent (the old unified curve).</param>
-    /// <param name="DescendStart">Local-progress point at which the vertical descent begins (&gt;0
-    /// back-loads the drop). 0 = descend from the start.</param>
-    private readonly record struct StyleParams(
-        double Stagger, double TargetWidth, double WidthBulge, double Duration, double ShapeEnd, double DescendStart);
+    /// <param name="Stagger">How far the leading rows run ahead of the trailing ones. This IS the
+    /// genie: at 1.2 the bottom row has been swallowed by the tile while the top row hasn't moved
+    /// yet, so the sheet is strung out along the path and pulls through a neck anchored at the dock.
+    /// Low values make every row shrink in unison — a rectangle that just narrows and drops.</param>
+    /// <param name="Duration">Animation length in ms (before EffectSpeed).</param>
+    private readonly record struct StyleParams(double Stagger, double Duration);
 
     private static StyleParams ParamsFor(GenieStyle style) => style switch
     {
-        // Smoke flowing into a bottle: the horizontal shrink is focused on the first ~2/3 (and only goes
-        // down to the tile width, not a point), while the vertical glide runs the whole time — so the two
-        // move together but the bottleneck shape is mostly formed before it lands. TargetWidth is unused
-        // for Genie (the neck width comes from TargetTileWidth).
-        GenieStyle.Genie => new StyleParams(Stagger: 0.5, TargetWidth: 6, WidthBulge: 0.35, Duration: 430,
-            ShapeEnd: 0.66, DescendStart: 0.0),
+        // Smoke into a bottle: heavy stagger, and a row's width tracks its own position along the path,
+        // so it reaches the tile width exactly AT the tile — the neck stays anchored to the dock.
+        GenieStyle.Genie => new StyleParams(Stagger: 1.2, Duration: 560),
         // Black hole: every point is dragged straight toward the target, nearest points first — so the
         // window stretches and collapses into the spot. Stagger = how strongly nearer points lead.
-        _ => new StyleParams(Stagger: 0.95, TargetWidth: 2, WidthBulge: -0.08, Duration: 300,
-            ShapeEnd: 1.0, DescendStart: 0.0),
+        _ => new StyleParams(Stagger: 0.95, Duration: 300),
     };
 
     /// <summary>Which curve to warp with; set before each play (defaults to the Suck funnel).</summary>
@@ -248,8 +240,9 @@ public sealed class GenieAnimator : OverlayAnimatorBase
     }
 
     /// <summary>
-    /// Genie funnel: rows lead in a staggered flow, pinching their width to the tile and sliding toward
-    /// the target — the smoke-into-a-bottle neck.
+    /// Genie funnel: rows flow in a heavy stagger, each one narrowing toward the tile in step with its
+    /// own descent — so width is a function of where the row IS, and the pinch sits at the dock while
+    /// the body above it stays full width. That correlation is the neck; the stagger is the flow.
     /// </summary>
     private void UpdateMeshGenie(double warp)
     {
@@ -257,32 +250,21 @@ public sealed class GenieAnimator : OverlayAnimatorBase
         var positions = _positions!;
         var src = Src;
         var target = Target;
-        var p = _params;
+        double stagger = _params.Stagger;
         double srcCenterX = src.Left + src.Width / 2;
         int rowStride = Columns + 1;
         double neckWidth = TargetTileWidth; // shrink only to the tile width (lands as the thumbnail)
         double h = MonitorHeight;
-        double baseProgress = warp * (1 + p.Stagger);
-        double invShapeEnd = 1.0 / p.ShapeEnd;
-        double invDescendSpan = 1.0 / (1 - p.DescendStart);
+        double baseProgress = warp * (1 + stagger);
 
         mesh.Positions = null; // detach for cheap bulk mutation (see UpdateMeshBlackHole)
         for (int j = 0; j <= Rows; j++)
         {
-            double lp = Clamp01(baseProgress - _leadRow![j] * p.Stagger);
-            // Decouple the horizontal shaping from the vertical descent: the funnel/pinch front-loads
-            // (done by ShapeEnd) so the neck forms early, then the drop happens (starting at DescendStart).
-            double eShape = SmoothStep(Clamp01(lp * invShapeEnd));
-            double eDescend = SmoothStep(Clamp01((lp - p.DescendStart) * invDescendSpan));
-
-            double rowCenterX = Lerp(srcCenterX, target.X, eShape);
-            // Width tapers from the body to the neck; the bulge term bellies the mid-neck out (smoke
-            // into a bottle) for the Genie style, or pinches it (negative) for the rigid Suck funnel.
-            double baseWidth = Lerp(src.Width, neckWidth, eShape);
-            double bulge = p.WidthBulge * src.Width * Math.Sin(Math.PI * eShape);
-            double rowWidth = Math.Max(neckWidth, baseWidth + bulge);
+            double e = SmoothStep(Clamp01(baseProgress - _leadRow![j] * stagger));
+            double rowCenterX = Lerp(srcCenterX, target.X, e);
+            double rowWidth = Lerp(src.Width, neckWidth, e);
             // 3D Y is up; screen Y is down — flip into the orthographic camera's space.
-            double yUp = h - Lerp(_origYRow![j], target.Y, eDescend);
+            double yUp = h - Lerp(_origYRow![j], target.Y, e);
 
             int rowBase = j * rowStride;
             for (int i = 0; i <= Columns; i++)

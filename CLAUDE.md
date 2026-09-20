@@ -650,7 +650,7 @@ src/Dockable/
   settings window's "Minimize windows using" combo). `DockWindow.MinimizeAnimator` maps them to two
   pre-warmed `IMinimizeAnimator`s: **Scale** → `ScaleAnimator` (capture scales down/translates to the
   tile); **Suck** and **Genie** → `GenieAnimator` (a 3D mesh warp) with its `Style` set to the
-  hard-funnel (Suck) or bulging-neck (Genie) curve. `EffectSpeed` is applied as the animator's
+  hard-funnel (Suck) or staggered-flow (Genie) curve. `EffectSpeed` is applied as the animator's
   `SpeedMultiplier`. Both overlays are pre-warmed at startup. Optionally, `MinimizeIntoIcon` makes a
   window minimize into its app's dock icon instead of a separate thumbnail tile (falls back to a tile
   when the app has no dock icon).
