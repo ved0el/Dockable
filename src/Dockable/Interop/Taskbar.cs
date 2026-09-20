@@ -34,7 +34,7 @@ public static class Taskbar
             var data = new APPBARDATA
             {
                 cbSize = (uint)Marshal.SizeOf<APPBARDATA>(),
-                hWnd = PInvoke.FindWindow(PrimaryClass, null!),
+                hWnd = PrimaryTray(),
             };
             uint state = (uint)PInvoke.SHAppBarMessage(PInvoke.ABM_GETSTATE, ref data);
             return (state & ABS_AUTOHIDE) != 0;
@@ -107,7 +107,7 @@ public static class Taskbar
     {
         try
         {
-            HWND tray = PInvoke.FindWindow(PrimaryClass, null!);
+            HWND tray = PrimaryTray();
             if (tray.IsNull)
                 return;
 
@@ -135,17 +135,11 @@ public static class Taskbar
     {
         try
         {
-            HWND primary = PInvoke.FindWindow(PrimaryClass, null!);
-            if (!primary.IsNull)
-                PInvoke.ShowWindow(primary, SHOW_WINDOW_CMD.SW_HIDE);
-
-            // Secondary taskbars (one per additional monitor) have no findable title.
-            PInvoke.EnumWindows((hwnd, _) =>
+            ForEachTrayWindow(hwnd =>
             {
-                if (GetClassName(hwnd) == SecondaryClass)
-                    PInvoke.ShowWindow(hwnd, SHOW_WINDOW_CMD.SW_HIDE);
-                return true; // keep enumerating
-            }, default);
+                PInvoke.ShowWindow(hwnd, SHOW_WINDOW_CMD.SW_HIDE);
+                return true; // keep sweeping
+            });
         }
         catch
         {
@@ -154,33 +148,62 @@ public static class Taskbar
     }
 
     /// <summary>
-    /// True while any taskbar window is on screen. FindWindow matches by class alone, so it finds the
-    /// primary and (the first) secondary tray without the full EnumWindows sweep <see cref="Hide"/>
-    /// does — this is the cheap "does anything need re-hiding?" probe the hide watcher polls.
+    /// True while any taskbar window is on screen — the cheap "does anything need re-hiding?" probe the
+    /// hide watcher polls. It sweeps EVERY tray window rather than asking <c>FindWindow</c> for one:
+    /// a restarted Explorer leaves a stale 0x0 <c>Shell_TrayWnd</c> behind (measured on Windows 11 25H2:
+    /// two of that class, from two different explorer.exe pids), and FindWindow matches by class in
+    /// z-order — so it hands back whichever one happens to be higher. Landing on the ghost made this
+    /// report "nothing visible" while the real taskbar sat on screen, and the watcher never re-hid it.
     /// </summary>
     internal static bool AnyTrayWindowVisible()
     {
-        HWND primary = PInvoke.FindWindow(PrimaryClass, null!);
-        if (!primary.IsNull && PInvoke.IsWindowVisible(primary))
-            return true;
-        HWND secondary = PInvoke.FindWindow(SecondaryClass, null!);
-        return !secondary.IsNull && PInvoke.IsWindowVisible(secondary);
+        bool visible = false;
+        ForEachTrayWindow(hwnd =>
+        {
+            if (!PInvoke.IsWindowVisible(hwnd))
+                return true; // keep looking
+            visible = true;
+            return false;    // found one — stop the sweep
+        });
+        return visible;
     }
 
-    private static void EnsureTrayWindowsShown()
+    private static void EnsureTrayWindowsShown() => ForEachTrayWindow(hwnd =>
     {
-        HWND primary = PInvoke.FindWindow(PrimaryClass, null!);
-        if (!primary.IsNull)
-            PInvoke.ShowWindow(primary, SHOW_WINDOW_CMD.SW_SHOW);
+        PInvoke.ShowWindow(hwnd, SHOW_WINDOW_CMD.SW_SHOW);
+        return true;
+    });
 
-        // Secondary taskbars (one per additional monitor) have no findable title.
+    /// <summary>
+    /// The real primary taskbar — the first tray window with an actual rect. Explorer restarts can leave
+    /// a 0x0 ghost of the same class behind, and an appbar message aimed at that one is a no-op.
+    /// </summary>
+    private static HWND PrimaryTray()
+    {
+        HWND found = default;
+        ForEachTrayWindow(hwnd =>
+        {
+            if (found.IsNull)
+                found = hwnd; // fall back to the first one if every candidate is degenerate
+            if (!PInvoke.GetWindowRect(hwnd, out var rect) || rect.right - rect.left <= 0)
+                return true;
+            found = hwnd;
+            return false;
+        });
+        return found;
+    }
+
+    /// <summary>Runs <paramref name="action"/> over every taskbar window (primary plus the per-monitor
+    /// secondaries) until it returns false. Note the secondary bars do NOT reliably carry the
+    /// <c>Shell_SecondaryTrayWnd</c> class on current Windows 11 builds — both classes are swept.</summary>
+    private static void ForEachTrayWindow(Func<HWND, bool> action) =>
         PInvoke.EnumWindows((hwnd, _) =>
         {
-            if (GetClassName(hwnd) == SecondaryClass)
-                PInvoke.ShowWindow(hwnd, SHOW_WINDOW_CMD.SW_SHOW);
-            return true; // keep enumerating
+            var cls = GetClassName(hwnd);
+            if (cls != PrimaryClass && cls != SecondaryClass)
+                return true;
+            return action(hwnd);
         }, default);
-    }
 
     private static unsafe string GetClassName(HWND hwnd)
     {
