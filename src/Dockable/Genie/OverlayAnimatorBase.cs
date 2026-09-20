@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -27,6 +27,13 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
     /// more time than the matching exit: the thing arriving is what the eye follows, while the thing
     /// leaving has already been dismissed.</summary>
     private const double RestoreDurationFactor = 1.15;
+
+    /// <summary>Warp at which the overlay starts fading out (and, mirrored, the point a restore has
+    /// faded in by). Every effect ends with all of its geometry collapsed onto one landing point, so
+    /// the last frames are a degenerate flat sliver and the hide that follows is a hard cut — both
+    /// read as a glitch. Dissolving over the final stretch removes the sliver and the cut together,
+    /// which is also what frees each effect to size its end geometry for the MIDDLE of the play.</summary>
+    private const double FadeStartWarp = 0.88;
 
     /// <summary>Landed size at the dock (DIP); set from the actual tile width before each play.</summary>
     public double TargetTileWidth { get; set; } = 56;
@@ -100,7 +107,7 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
 
         SetContent(bitmap);
         PreparePlay();
-        ApplyFrame(reverse ? 1.0 : 0.0);
+        ApplyFrameAndFade(reverse ? 1.0 : 0.0);
         _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
 
@@ -125,7 +132,7 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
 
         SetContent(bitmap);
         PreparePlay();
-        ApplyFrame(0.0); // un-warped: the window exactly where it was
+        ApplyFrameAndFade(0.0); // un-warped, fully opaque: the window exactly where it was
         _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
         // No render loop / profiler session here — AnimateTo starts them when the warp begins.
@@ -143,7 +150,7 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
         _lastFrame = TimeSpan.Zero;
 
         PreparePlay();
-        ApplyFrame(reverse ? 1.0 : 0.0);
+        ApplyFrameAndFade(reverse ? 1.0 : 0.0);
         _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
 
@@ -151,6 +158,18 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
             MinimizeProfiler.BeginSession($"{ProfileName}/{(reverse ? "restore" : "min")}", Src.Width, Src.Height, TargetTileWidth);
 
         HookRenderLoop();
+    }
+
+    /// <summary>Renders one frame and keeps the overlay's opacity in step with it. Every path that
+    /// paints a frame goes through here — a play that ended faded out must not leave the next
+    /// <see cref="ShowAtSource"/> invisible (that overlay frame is what covers the real window while
+    /// it minimizes behind it). Opacity is a function of warp alone, so a restore mirrors for free:
+    /// it emerges from the dock instead of popping in.</summary>
+    private void ApplyFrameAndFade(double warp)
+    {
+        ApplyFrame(warp);
+        double over = (warp - FadeStartWarp) / (1 - FadeStartWarp);
+        _overlay!.Opacity = over <= 0 ? 1.0 : over >= 1 ? 0.0 : 1 - over;
     }
 
     private void HookRenderLoop()
@@ -185,7 +204,7 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
         _lastFrame = now;
 
         long ts = MinimizeProfiler.Enabled ? Stopwatch.GetTimestamp() : 0;
-        ApplyFrame(warp);
+        ApplyFrameAndFade(warp);
         if (MinimizeProfiler.Enabled)
             MinimizeProfiler.Frame(now, Stopwatch.GetElapsedTime(ts).TotalMilliseconds);
 

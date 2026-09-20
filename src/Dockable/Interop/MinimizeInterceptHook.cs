@@ -37,6 +37,7 @@ public sealed class MinimizeInterceptHook : IDisposable
 {
     private const int HC_ACTION = 0;
 
+    private const uint WM_MOUSEMOVE = 0x0200;
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;
     private const uint WM_KEYDOWN = 0x0100;
@@ -72,6 +73,10 @@ public sealed class MinimizeInterceptHook : IDisposable
     // The window whose minimize-button press we swallowed; the release decides whether to minimize it.
     private IntPtr _armedMinimize;
 
+    // Whether the cursor was inside a raise zone on the previous move, so the zone event fires once per
+    // approach instead of on every move within it.
+    private bool _inRaiseZone;
+
     /// <summary>Fires with the HWND whose minimize the user just triggered (min-button click or Win+Down).</summary>
     public event Action<IntPtr>? MinimizeRequested;
 
@@ -87,6 +92,16 @@ public sealed class MinimizeInterceptHook : IDisposable
     /// this only gives the dock a head start to lift its capture exclusion before the overlay grabs
     /// the screen.</summary>
     public event Action? ScreenSnipRequested;
+
+    /// <summary>Screen-px bands the docks live in. The cursor entering one raises
+    /// <see cref="CursorEnteredRaiseZone"/>. Empty (the default) disables the watch entirely.</summary>
+    internal IReadOnlyList<RECT> RaiseZones { get; set; } = Array.Empty<RECT>();
+
+    /// <summary>Fires when the cursor crosses INTO a <see cref="RaiseZones"/> band (once per approach).
+    /// Lets the dock re-assert its z-order as the user reaches for it, rather than waiting for the 1 s
+    /// backstop — the window that buried it (a picture-in-picture player, a tiling WM) is also topmost,
+    /// so whoever raised last wins, and a click that lands in that second goes to the wrong window.</summary>
+    public event Action? CursorEnteredRaiseZone;
 
     public MinimizeInterceptHook()
     {
@@ -109,7 +124,18 @@ public sealed class MinimizeInterceptHook : IDisposable
     {
         if (code == HC_ACTION)
         {
-            if (wParam.Value == WM_LBUTTONDOWN)
+            if (wParam.Value == WM_MOUSEMOVE)
+            {
+                if (RaiseZones.Count > 0)
+                {
+                    var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>((IntPtr)lParam.Value);
+                    bool inside = IsInRaiseZone(data.pt);
+                    if (inside && !_inRaiseZone)
+                        CursorEnteredRaiseZone?.Invoke();
+                    _inRaiseZone = inside;
+                }
+            }
+            else if (wParam.Value == WM_LBUTTONDOWN)
             {
                 var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>((IntPtr)lParam.Value);
                 if (IsOnMinimizeButton(data.pt, out IntPtr hwnd))
@@ -199,6 +225,18 @@ public sealed class MinimizeInterceptHook : IDisposable
         int right = left + w, bottom = top + h;
         bool inCluster = pt.X >= left && pt.X < right && pt.Y >= top && pt.Y < bottom;
         return inCluster && pt.X < left + w / 3; // minimize is the leftmost of the LTR cluster
+    }
+
+    private bool IsInRaiseZone(System.Drawing.Point pt)
+    {
+        var zones = RaiseZones;
+        for (int i = 0; i < zones.Count; i++)
+        {
+            var z = zones[i];
+            if (pt.X >= z.left && pt.X < z.right && pt.Y >= z.top && pt.Y < z.bottom)
+                return true;
+        }
+        return false;
     }
 
     private LRESULT KeyboardProc(int code, WPARAM wParam, LPARAM lParam)

@@ -37,11 +37,24 @@ public sealed class GenieAnimator : OverlayAnimatorBase
     {
         // Smoke into a bottle: heavy stagger, and a row's width tracks its own position along the path,
         // so it reaches the tile width exactly AT the tile — the neck stays anchored to the dock.
-        GenieStyle.Genie => new StyleParams(Stagger: 1.2, Duration: 560),
+        GenieStyle.Genie => new StyleParams(Stagger: 1.2, Duration: 820),
         // Black hole: every point is dragged straight toward the target, nearest points first — so the
         // window stretches and collapses into the spot. Stagger = how strongly nearer points lead.
         _ => new StyleParams(Stagger: 0.95, Duration: 300),
     };
+
+    /// <summary>Neck width at full warp, as a fraction of the landing tile's width (with a floor in
+    /// DIP). Roughly the icon's own width, like the Dock: the sheet is swallowed by something the size
+    /// of the icon, it does not converge to a tip.</summary>
+    private const double NeckWidthFactor = 0.85;
+    private const double NeckWidthFloor = 10;
+
+    /// <summary>How late the width collapse happens relative to the row's descent (exponent on the
+    /// eased local progress). THIS is what separates a neck from a cone: at 1.0 the width shrinks in
+    /// lockstep with the drop, so the whole path tapers evenly and reads as a pointed funnel. Above 1
+    /// the body keeps nearly its full width for most of the travel and pinches only in the last
+    /// stretch, right at the dock — the Dock's short, near-parallel neck under a full-width body.</summary>
+    private const double WidthPinchPower = 2.5;
 
     /// <summary>Which curve to warp with; set before each play (defaults to the Suck funnel).</summary>
     public GenieStyle Style { get; set; } = GenieStyle.Suck;
@@ -253,7 +266,7 @@ public sealed class GenieAnimator : OverlayAnimatorBase
         double stagger = _params.Stagger;
         double srcCenterX = src.Left + src.Width / 2;
         int rowStride = Columns + 1;
-        double neckWidth = TargetTileWidth; // shrink only to the tile width (lands as the thumbnail)
+        double neckWidth = Math.Max(NeckWidthFloor, TargetTileWidth * NeckWidthFactor);
         double h = MonitorHeight;
         double baseProgress = warp * (1 + stagger);
 
@@ -261,8 +274,11 @@ public sealed class GenieAnimator : OverlayAnimatorBase
         for (int j = 0; j <= Rows; j++)
         {
             double e = SmoothStep(Clamp01(baseProgress - _leadRow![j] * stagger));
-            double rowCenterX = Lerp(srcCenterX, target.X, e);
-            double rowWidth = Lerp(src.Width, neckWidth, e);
+            // Width collapses LATER than the descent (see WidthPinchPower) so the neck is short and
+            // sits at the dock, instead of the whole path tapering into a cone.
+            double wE = Math.Pow(e, WidthPinchPower);
+            double rowCenterX = Lerp(srcCenterX, target.X, e); // the sideways slide still tracks the descent
+            double rowWidth = Lerp(src.Width, neckWidth, wE);
             // 3D Y is up; screen Y is down — flip into the orthographic camera's space.
             double yUp = h - Lerp(_origYRow![j], target.Y, e);
 

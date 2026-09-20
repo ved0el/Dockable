@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
@@ -84,6 +84,25 @@ public partial class DockWindow : Window
         return _pinnedMonitorPx is { } px ? info with { MonitorPx = px } : info;
     }
 
+    /// <summary>The display this dock was pinned to (physical px), or null before the app assigned one.
+    /// App routes a window's minimize to the dock whose display holds it.</summary>
+    internal Rect? PinnedMonitorPx => _pinnedMonitorPx;
+
+    /// <summary>Whether any minimize/restore warp is in flight on this dock.</summary>
+    internal bool HasWarpInFlight => _busy.Count > 0;
+
+    /// <summary>Whether this dock is mid-warp for that specific window.</summary>
+    internal bool IsWarping(IntPtr hwnd) => _busy.Contains(hwnd);
+
+    /// <summary>Every window this dock is currently holding minimized (tiles + stashed into icons).</summary>
+    internal IEnumerable<IntPtr> MinimizedHwnds =>
+        (ViewModel?.MinimizedWindows.Select(t => t.Hwnd) ?? Enumerable.Empty<IntPtr>())
+        .Concat(_iconMinimized.Keys)
+        .ToList(); // snapshot: callers restore while this mutates
+
+    /// <summary>Whether this dock holds a representation of the window (a tile, or stashed into its icon).</summary>
+    internal bool RepresentsWindow(IntPtr hwnd) => ViewModel is not null && IsWindowRepresented(hwnd);
+
     /// <summary>Anchors this dock to <paramref name="monitorPx"/> and moves it there (physical px, so
     /// it's exact regardless of per-monitor scaling), then re-runs the docking behavior.</summary>
     internal void PinToMonitor(Rect monitorPx)
@@ -158,6 +177,11 @@ public partial class DockWindow : Window
     private readonly TaskbarHideWatcher _taskbarHideWatcher = new();
     // Full-window captures taken while windows are visible (capture-at-minimize is too late).
     private readonly WindowThumbnailCache _thumbnails = new();
+
+    /// <summary>The live capture cache. One per process (only the main dock starts it), so the extra
+    /// displays' docks read through to it rather than their own never-started instance.</summary>
+    private WindowThumbnailCache Thumbnails =>
+        IsSecondary && App.Current.MainDock is { } main ? main._thumbnails : _thumbnails;
     // Live acrylic blur rendered in a separate window directly behind the bar.
     private readonly AcrylicBackdrop _acrylic = new();
     private const double BarCornerRadius = 24; // matches DockBackground's CornerRadius
@@ -268,11 +292,9 @@ public partial class DockWindow : Window
             UpdateFullscreenState(); // backstop in case a fullscreen transition didn't raise an event
             CheckCaptureFriendlyExit(); // re-exclude the dock from capture once the Snipping Tool is gone
             KeepOnTop();             // backstop: a tiling WM can push a window above us with no focus change
+            PruneStaleMinimized();       // drop previews of windows that were closed while minimized
             if (!IsSecondary)
-            {
-                PruneStaleMinimized();   // drop previews of windows that were closed while minimized
                 CheckAndPromptNewPins(); // reliable poll for new taskbar pins (the folder watcher often doesn't fire on Win11)
-            }
         };
 
         _previewDwellTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(PreviewDwellMs) };
@@ -471,11 +493,16 @@ public partial class DockWindow : Window
 
         // The minimize machinery is process-wide (system hooks + one shared warp overlay), so only the
         // main display's dock runs it — windows minimize into that dock, whichever display they were on.
+        // Each dock owns its own overlays now that a window minimizes into the dock on ITS display —
+        // two displays can warp at once, and a secondary's first minimize must not pay the build cost.
+        _genie.Prewarm(); // build the reusable overlays now so the first minimize is instant
+        _scale.Prewarm();
+
         if (!IsSecondary)
         {
-            _genie.Prewarm(); // build the reusable overlays now so the first minimize is instant
-            _scale.Prewarm();
-            _thumbnails.ShouldSuspend = () => _busy.Count > 0; // don't capture mid-warp (it stutters the frames)
+            // A warp on ANY display stutters if the shared capture thread keeps blitting (they all land
+            // on the one UI thread), so the suspend test spans every dock.
+            _thumbnails.ShouldSuspend = () => App.Current.AnyDockWarping();
             _thumbnails.Start();
             _minimizeHook.WindowMinimizing += OnWindowMinimizing;
             _minimizeHook.WindowUnminimized += OnWindowUnminimized;
@@ -483,11 +510,17 @@ public partial class DockWindow : Window
 
             // Pre-empt the minimize gesture so the warp's frame 0 is on screen before the OS minimizes.
             // Defer the real work off the hook callback so the low-level hook returns immediately.
-            _minimizeIntercept.MinimizeRequested += hwnd => Dispatcher.BeginInvoke(() => InterceptedMinimize(hwnd));
+            _minimizeIntercept.MinimizeRequested += hwnd =>
+                Dispatcher.BeginInvoke(() => App.Current.DockFor(hwnd).InterceptedMinimize(hwnd));
             _minimizeIntercept.MinimizeAllRequested += () => Dispatcher.BeginInvoke(OnMinimizeAllRequested);
             _minimizeIntercept.ShowDesktopRequested += () => Dispatcher.BeginInvoke(OnShowDesktopRequested);
             // Win+Shift+S / PrintScreen: lift the glass capture exclusion BEFORE the snip overlay grabs the
             // screen, so the dock shows up in the user's capture. Send priority — this must win that race.
+            // A picture-in-picture player (and any other self-raising topmost window) sits in the same
+            // z-band as the dock, so the 1 s KeepOnTop backstop can leave it buried exactly long enough
+            // to swallow a click. The hook already sees every global mouse move — re-assert on approach.
+            _minimizeIntercept.CursorEnteredRaiseZone +=
+                () => Dispatcher.BeginInvoke(() => App.Current.KeepDocksOnTop());
             _minimizeIntercept.ScreenSnipRequested +=
                 () => Dispatcher.BeginInvoke(EnterCaptureFriendlyMode, DispatcherPriority.Send);
             _minimizeIntercept.Start();
@@ -684,38 +717,45 @@ public partial class DockWindow : Window
         }
 
         var toRaise = new List<IntPtr>();
-        var toRestore = new List<(IntPtr Hwnd, DockItemViewModel? Tile, BitmapSource? Bitmap)>();
+        var toRestore = new List<IntPtr>();
         foreach (var hwnd in app.Windows)
         {
-            var tile = ViewModel?.FindMinimizedWindow(hwnd);
-            if (tile is not null)
-                toRestore.Add((hwnd, tile, tile.Icon as BitmapSource));               // minimized as a tile
-            else if (WindowControl.IsIconic(hwnd))
-                toRestore.Add((hwnd, null, _iconMinimized.GetValueOrDefault(hwnd)
-                    ?? _thumbnails.TryGet(hwnd)?.Bitmap));                              // minimized into the icon
+            if (ViewModel?.FindMinimizedWindow(hwnd) is not null || WindowControl.IsIconic(hwnd))
+                toRestore.Add(hwnd);
             else
                 toRaise.Add(hwnd);
         }
 
         if (toRaise.Count > 0)
             WindowControl.ActivateAll(toRaise);
-        RestoreQueueNext(toRestore, 0, app);
+        RestoreQueueNext(toRestore, 0);
     }
 
     /// <summary>Restores the queued minimized windows one at a time, chaining each animation to the
-    /// next. A tile aims at itself; an icon-stashed window aims at <paramref name="fallbackApp"/> (the
-    /// clicked app icon) or, when null, at whatever app icon currently claims it — or (0,0) if none.</summary>
-    private void RestoreQueueNext(List<(IntPtr Hwnd, DockItemViewModel? Tile, BitmapSource? Bitmap)> queue,
-        int index, DockItemViewModel? fallbackApp)
+    /// next. Each one is handed to the dock that actually holds it — with a dock per display, the icon
+    /// clicked here and the icon the window went into can be on different screens.</summary>
+    private void RestoreQueueNext(List<IntPtr> queue, int index)
     {
         if (index >= queue.Count)
             return;
-        var (hwnd, tile, bitmap) = queue[index];
+        var hwnd = queue[index];
+        Action next = () => RestoreQueueNext(queue, index + 1);
+        var owner = App.Current.DockOwning(hwnd) ?? this;
+        owner.RestoreOwnedWindow(hwnd, next);
+    }
+
+    /// <summary>Plays the reverse warp for a window THIS dock is tracking, out of its tile or (in
+    /// minimize-into-icon mode) its app icon on this display.</summary>
+    internal void RestoreOwnedWindow(IntPtr hwnd, Action? onDone)
+    {
+        var tile = ViewModel?.FindMinimizedWindow(hwnd);
+        var bitmap = tile is not null
+            ? tile.Icon as BitmapSource
+            : _iconMinimized.GetValueOrDefault(hwnd) ?? Thumbnails.TryGet(hwnd)?.Bitmap;
         Point target = tile is not null ? TileScreenCenter(tile)
-            : fallbackApp is not null ? TileScreenCenter(fallbackApp)
             : ViewModel?.FindAppForWindow(hwnd) is { } app ? TileScreenCenter(app)
             : new Point(0, 0);
-        RestoreWindowAnimated(hwnd, tile, target, bitmap, () => RestoreQueueNext(queue, index + 1, fallbackApp));
+        RestoreWindowAnimated(hwnd, tile, target, bitmap, onDone);
     }
 
     private void OnForegroundChanged()
@@ -734,7 +774,7 @@ public partial class DockWindow : Window
     /// does the same. Driven by foreground changes plus the 1 s tick as a backstop.</summary>
     // ponytail: 1 Hz backstop. If that lags, the WH_MOUSE_LL hook in MinimizeInterceptHook already
     // sees every global mouse move — a bar-rect test there would raise on approach instead.
-    private void KeepOnTop()
+    internal void KeepOnTop()
     {
         if (_hwnd == IntPtr.Zero || _busy.Count > 0 /* a minimize warp lands ON the bar */)
             return;
@@ -745,6 +785,31 @@ public partial class DockWindow : Window
             || FanPopup.IsOpen || _preview?.IsVisible == true)
             return;
         RaiseToTop();
+    }
+
+    /// <summary>How far from the docked edge (physical px) counts as "reaching for the dock". A trigger
+    /// band, not a hit test — generous on purpose, and DPI-independent for the same reason.</summary>
+    private const int RaiseZoneBandPx = 160;
+
+    /// <summary>Publishes the bands the mouse hook watches: the strip along the docked edge of every
+    /// display that has a dock. Main dock only — it owns the one process-wide hook.</summary>
+    internal void RefreshRaiseZones(IReadOnlyList<Rect> monitorsPx)
+    {
+        if (IsSecondary)
+            return;
+        var zones = new RECT[monitorsPx.Count];
+        for (int i = 0; i < monitorsPx.Count; i++)
+        {
+            var m = monitorsPx[i];
+            zones[i] = new RECT
+            {
+                left = (int)m.Left,
+                top = (int)(m.Bottom - RaiseZoneBandPx),
+                right = (int)m.Right,
+                bottom = (int)m.Bottom,
+            };
+        }
+        _minimizeIntercept.RaiseZones = zones;
     }
 
     /// <summary>Puts the dock at the top of the topmost band without stealing focus, and re-seats the
@@ -2112,15 +2177,16 @@ public partial class DockWindow : Window
             var hwnd = _minimizeQueue.Dequeue();
             // Skip anything we're already handling (our own intercepted/cascade minimizes fire this event
             // too) or have already represented.
-            if (_busy.Contains(hwnd) || IsWindowRepresented(hwnd))
+            if (App.Current.AnyDockHandles(hwnd))
                 continue;
             // Use the capture taken while the window was still visible — capturing now (it's already
             // minimized) would grab a black sliver.
-            var capture = _thumbnails.TryGet(hwnd) ?? WindowCapture.Capture(hwnd);
+            var capture = Thumbnails.TryGet(hwnd) ?? WindowCapture.Capture(hwnd);
             if (capture is null)
                 continue; // nothing to warp
             _minimizeDraining = true;
-            MinimizeToDock(hwnd, capture, onDone: DrainMinimizeQueue);
+            // Into the dock on the window's OWN display; the queue (and its chaining) stays here.
+            App.Current.DockFor(hwnd).MinimizeToDock(hwnd, capture, onDone: DrainMinimizeQueue);
             return; // resume once this window's warp finishes (MinimizeToDock always invokes onDone)
         }
         _minimizeDraining = false;
@@ -2164,7 +2230,10 @@ public partial class DockWindow : Window
     /// (taskbar, Alt+Tab, the app itself). The OS already brought it back — and since its transitions
     /// are suppressed it popped in instantly, which is exactly what's expected from those gestures — so
     /// we just drop the now-stale tile/tracking rather than play a reverse warp over the visible window.</summary>
-    private void OnWindowUnminimized(IntPtr hwnd)
+    private void OnWindowUnminimized(IntPtr hwnd) => App.Current.DockOwning(hwnd)?.DropExternalRestore(hwnd);
+
+    /// <summary>Drops this dock's tracking for a window the OS restored behind our back.</summary>
+    private void DropExternalRestore(IntPtr hwnd)
     {
         if (ViewModel is null || _busy.Contains(hwnd))
             return; // our own click-to-restore drives the warp and cleans up itself
@@ -2179,7 +2248,7 @@ public partial class DockWindow : Window
     /// <summary>On exit, un-minimizes every window the dock had minimized (tile or into-icon) so the user
     /// isn't left with windows stranded behind a dock that's no longer there. Also re-enables the OS
     /// min/max transitions we suppressed on them, leaving each app's animations as we found them.</summary>
-    private void RestoreAllMinimized()
+    internal void RestoreAllMinimized()
     {
         if (ViewModel is null)
             return;
@@ -2201,7 +2270,7 @@ public partial class DockWindow : Window
     /// <summary>The user is about to minimize <paramref name="hwnd"/> (its min-button release or Win+Down
     /// was intercepted before the OS acted). Drives the no-flash warp and focuses the next window after,
     /// like a normal minimize; see <see cref="MinimizeOneAnimated"/>.</summary>
-    private void InterceptedMinimize(IntPtr hwnd) => MinimizeOneAnimated(hwnd, null);
+    internal void InterceptedMinimize(IntPtr hwnd) => MinimizeOneAnimated(hwnd, null);
 
     /// <summary>How long to let a just-raised window repaint on top before capturing it (blind constant).</summary>
     private const int ForegroundSettleMs = 110;
@@ -2215,9 +2284,9 @@ public partial class DockWindow : Window
     /// <param name="focusNext">After minimizing, focus the next app window (single minimize, matching the
     /// OS). Win+M passes false: it ends on the desktop, and forcing foreground from our non-foreground
     /// process makes the next window's taskbar button flash instead of focusing.</param>
-    private void MinimizeOneAnimated(IntPtr hwnd, Action? onDone, bool raiseIfNeeded = true, bool focusNext = true)
+    internal void MinimizeOneAnimated(IntPtr hwnd, Action? onDone, bool raiseIfNeeded = true, bool focusNext = true)
     {
-        if (ViewModel is null || _busy.Contains(hwnd) || IsWindowRepresented(hwnd))
+        if (ViewModel is null || App.Current.AnyDockHandles(hwnd))
         {
             onDone?.Invoke();
             return;
@@ -2302,13 +2371,12 @@ public partial class DockWindow : Window
             return;
         var hwnd = windows[index];
         void Next() => MinimizeListSequential(windows, index + 1, raiseEach);
-        if (!WindowControl.IsWindow(hwnd) || WindowControl.IsIconic(hwnd) || _busy.Contains(hwnd)
-            || IsWindowRepresented(hwnd))
+        if (!WindowControl.IsWindow(hwnd) || WindowControl.IsIconic(hwnd) || App.Current.AnyDockHandles(hwnd))
         {
             Next();
             return;
         }
-        MinimizeOneAnimated(hwnd, Next, raiseIfNeeded: raiseEach, focusNext: false);
+        App.Current.DockFor(hwnd).MinimizeOneAnimated(hwnd, Next, raiseIfNeeded: raiseEach, focusNext: false);
     }
 
     /// <summary>Restores every dock-minimized window (tiles + into-icon), one at a time with the reverse
@@ -2317,12 +2385,9 @@ public partial class DockWindow : Window
     {
         if (ViewModel is null)
             return;
-        var queue = new List<(IntPtr Hwnd, DockItemViewModel? Tile, BitmapSource? Bitmap)>();
-        foreach (var tile in ViewModel.MinimizedWindows.ToArray())
-            queue.Add((tile.Hwnd, tile, tile.Icon as BitmapSource));
-        foreach (var kv in _iconMinimized.ToArray())
-            queue.Add((kv.Key, null, kv.Value));
-        RestoreQueueNext(queue, 0, null);
+        // Every display's dock, since a window minimizes into the dock on its own screen.
+        var queue = App.Current.Docks.SelectMany(d => d.MinimizedHwnds).Distinct().ToList();
+        RestoreQueueNext(queue, 0);
     }
 
     /// <summary>Warps a just-minimized window's <paramref name="capture"/> into its app icon (when
@@ -2330,10 +2395,10 @@ public partial class DockWindow : Window
     /// external windows (via the minimize hook) and the dock's own Preferences window. When
     /// <paramref name="windowStillVisible"/> is true the window hasn't been minimized yet (the gesture
     /// was intercepted): frame 0 is painted first, then the window is minimized behind it.</summary>
-    private void MinimizeToDock(IntPtr hwnd, WindowCapture.Result? capture, bool windowStillVisible = false,
+    internal void MinimizeToDock(IntPtr hwnd, WindowCapture.Result? capture, bool windowStillVisible = false,
         Action? onDone = null, bool focusNext = true)
     {
-        if (ViewModel is null || _busy.Contains(hwnd) || IsWindowRepresented(hwnd))
+        if (ViewModel is null || App.Current.AnyDockHandles(hwnd))
         {
             onDone?.Invoke();
             return;
@@ -2432,6 +2497,9 @@ public partial class DockWindow : Window
     /// match what a live minimize would have produced: a thumbnail tile, or — in "minimize into icon"
     /// mode — owned by their app's dock icon. An already-minimized window can't be captured, so the app's
     /// icon stands in for the missing window thumbnail.</summary>
+    // ponytail: adopted onto the main dock regardless of which display the window belongs to —
+    // MonitorFromWindow on an already-iconic window reports (-32000,-32000) → the primary. Read
+    // GetWindowPlacement's rcNormalPosition + MonitorFromRect if that placement starts to matter.
     private void SyncPreMinimizedWindows()
     {
         if (ViewModel is null)
@@ -2518,11 +2586,11 @@ public partial class DockWindow : Window
     /// app icon), then runs <paramref name="onDone"/> (used to chain a sequential group restore).
     /// Falls back to a plain restore when there's no captured bitmap to animate.
     /// </summary>
-    private void RestoreWindowAnimated(IntPtr hwnd, DockItemViewModel? tile, Point target, BitmapSource? bitmap, Action onDone)
+    private void RestoreWindowAnimated(IntPtr hwnd, DockItemViewModel? tile, Point target, BitmapSource? bitmap, Action? onDone)
     {
         if (ViewModel is null || _busy.Contains(hwnd))
         {
-            onDone();
+            onDone?.Invoke();
             return;
         }
 
@@ -2530,7 +2598,7 @@ public partial class DockWindow : Window
         {
             // Window is gone; drop any stale tile / tracking and move on.
             DropMinimizedTracking(hwnd, tile);
-            onDone();
+            onDone?.Invoke();
             return;
         }
 
@@ -2538,7 +2606,7 @@ public partial class DockWindow : Window
         {
             WindowControl.Restore(hwnd);
             DropMinimizedTracking(hwnd, tile);
-            onDone();
+            onDone?.Invoke();
             return;
         }
 
@@ -2562,7 +2630,7 @@ public partial class DockWindow : Window
             WindowControl.Restore(hwnd);
             DropMinimizedTracking(hwnd, tile);
             EndWarp(hwnd);
-            onDone();
+            onDone?.Invoke();
         });
     }
 
@@ -2591,10 +2659,20 @@ public partial class DockWindow : Window
         => new(r.Left / scale, r.Top / scale, r.Width / scale, r.Height / scale);
 
     /// <summary>Screen-space (DIP) center of a tile.</summary>
+    /// <summary>How far above the icon's own top edge a warp collapses to (DIP). The window is
+    /// swallowed at the mouth of the dock, not buried in the middle of the icon.</summary>
+    private const double LandingLiftDip = 6;
+
+    /// <summary>Screen Y a warp lands on, from the icon's TOP edge — not the bar's. Magnification grows
+    /// icons upward out of the bar, so a hovered icon's top sits well above it; anchoring to the bar
+    /// would bury the neck inside a zoomed icon. Bottom-edge only, like the rest of the warp geometry.</summary>
+    private static double LandingY(double tileTop) => tileTop - LandingLiftDip;
+
     private Point TileScreenCenter(DockItemViewModel tile)
     {
         var (left, top) = ComputePlacement();
-        return new Point(left + tile.X + tile.RenderSize / 2, top + tile.Y + tile.RenderSize / 2);
+        // tile.Y/RenderSize are the LIVE (magnified) box, so this follows the icon as it zooms.
+        return new Point(left + tile.X + tile.RenderSize / 2, LandingY(top + tile.Y));
     }
 
     /// <summary>Screen-space (DIP) center of a tile's RESTING (fully grown-in) slot. Used to aim the
@@ -2603,7 +2681,9 @@ public partial class DockWindow : Window
     {
         var (left, top) = ComputePlacement();
         var (x, y) = ViewModel!.RestingCenterOf(tile);
-        return new Point(left + x, top + y);
+        // Resting = un-magnified and fully grown in, so derive its top from the settled size rather
+        // than the live box (a tile still growing its slot in renders ~2 DIP tall).
+        return new Point(left + x, LandingY(top + y - TileWidthOf(tile) / 2));
     }
 
     /// <summary>Marks a warp in flight and quiets everything that would compete with its frames: the
@@ -2845,30 +2925,23 @@ public partial class DockWindow : Window
     }
 
     /// <summary>A preview thumbnail was clicked: raise that one window (or restore it with the reverse
-    /// warp when the dock holds it minimized). Minimize tracking lives on the main dock, so a secondary
-    /// dock hands the restore over — the same way its windows minimize into the main dock.</summary>
+    /// warp out of whichever display's dock is holding it).</summary>
     private void OnPreviewPick(IntPtr hwnd)
     {
         ClosePreview(); // hide before a restore warp starts painting over the same area
-        (IsSecondary ? App.Current.MainDock : this)?.ActivateWindow(hwnd);
+        ActivateWindow(hwnd);
     }
 
     private void ActivateWindow(IntPtr hwnd)
     {
         if (!WindowControl.IsWindow(hwnd))
             return;
-        var tile = ViewModel?.FindMinimizedWindow(hwnd);
-        if (tile is null && !WindowControl.IsIconic(hwnd))
+        if (App.Current.DockOwning(hwnd) is null && !WindowControl.IsIconic(hwnd))
         {
             WindowControl.Activate(hwnd);
             return;
         }
-        var bitmap = tile is not null
-            ? tile.Icon as BitmapSource
-            : _iconMinimized.GetValueOrDefault(hwnd) ?? _thumbnails.TryGet(hwnd)?.Bitmap;
-        RestoreQueueNext(
-            new List<(IntPtr Hwnd, DockItemViewModel? Tile, BitmapSource? Bitmap)> { (hwnd, tile, bitmap) },
-            0, null);
+        RestoreQueueNext(new List<IntPtr> { hwnd }, 0);
     }
 
     // --- Item interaction ---
@@ -4142,11 +4215,12 @@ public partial class DockWindow : Window
         const int WM_SYSCOMMAND = 0x0112;
         const int SC_MINIMIZE = 0xF020;
         if (msg == WM_SYSCOMMAND && (wParam.ToInt64() & 0xFFF0) == SC_MINIMIZE
-            && ViewModel is not null && !_busy.Contains(hwnd))
+            && ViewModel is not null && !App.Current.AnyDockHandles(hwnd))
         {
             var capture = WindowCapture.Capture(hwnd);
-            // Paint frame 0 over the still-visible window, then minimize behind it (no flash).
-            MinimizeToDock(hwnd, capture, windowStillVisible: true);
+            // Paint frame 0 over the still-visible window, then minimize behind it (no flash) — into the
+            // dock on whichever display the Preferences window was dragged to.
+            App.Current.DockFor(hwnd).MinimizeToDock(hwnd, capture, windowStillVisible: true);
             handled = true;                 // we drove the minimize + warp
         }
         return IntPtr.Zero;
@@ -4321,8 +4395,9 @@ public partial class DockWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
-        if (!IsSecondary)
-            RestoreAllMinimized(); // don't leave the user's windows stranded in (now-gone) dock tiles
+        // Every dock holds its own minimized windows, so each releases its own — including a secondary
+        // closed by SyncDockMonitors when the display layout changes.
+        RestoreAllMinimized(); // don't leave the user's windows stranded in (now-gone) dock tiles
         _appRefreshTimer.Stop();
         _startWatchTimer.Stop();
         _pinCheckTimer.Stop();

@@ -297,7 +297,12 @@ src/Dockable/
     WindowFilter.cs      Shared "is this a normal app window" test (internal; takes HWND).
     MinimizeHook.cs      SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART..MINIMIZEEND) → WindowMinimizing /
                          WindowUnminimized events (the latter for external taskbar/Alt+Tab restores).
-    MinimizeInterceptHook.cs  Low-level WH_MOUSE_LL + WH_KEYBOARD_LL hooks that PRE-EMPT a minimize
+    MinimizeInterceptHook.cs  Also owns the dock's cursor-approach z-order raise: `RaiseZones` (bands
+                         along each docked display edge, published by `DockWindow.RefreshRaiseZones`
+                         from `App.SyncDockMonitors`) + `CursorEnteredRaiseZone` → `App.KeepDocksOnTop`.
+                         A PiP player / tiling WM sits in the same topmost band, so last-raiser wins and
+                         the 1 s `KeepOnTop` backstop could leave the dock buried when a click lands.
+                         Low-level WH_MOUSE_LL + WH_KEYBOARD_LL hooks that PRE-EMPT a minimize
                          gesture so the warp's frame 0 paints before the OS minimizes (no flash):
                          min-button click (NCHITTEST==HTMINBUTTON, else DWMWA_CAPTION_BUTTON_BOUNDS
                          left-third; arm-on-down, act-on-up, swallow both) → MinimizeRequested; Win+Down
@@ -558,12 +563,28 @@ src/Dockable/
     monitor lookup goes through `MonitorInfo()` (pinned rect + live `GetDpiForWindow`) instead of
     `Monitors.ForWindow` — re-deriving the monitor from the window position could bounce a mixed-DPI
     dock between screens, since the monitor feeds the window size which repositions the window.
-  - **`IsSecondary` owns nothing process-wide.** The tray icon, the minimize hooks/animators +
-    thumbnail cache, taskbar visibility, the pinned-folder watcher, the one-time startup prompts,
-    `SyncPreMinimizedWindows`, `RestoreAllMinimized` and `Taskbar.Restore()` all stay on the main dock
-    (`App.MainDock`, which is also what `SettingsWindow`/`MenuBarWindow` reach for). A secondary's
-    `OpenDockPreferences` forwards to the main dock so Preferences stays single-instance.
-    **Consequence:** a window minimized on display 2 warps into the **main** display's dock.
+  - **`IsSecondary` owns nothing process-wide.** The tray icon, the minimize HOOKS, the thumbnail
+    cache, taskbar visibility, the pinned-folder watcher, the one-time startup prompts,
+    `SyncPreMinimizedWindows` and `Taskbar.Restore()` all stay on the main dock (`App.MainDock`, which
+    is also what `SettingsWindow`/`MenuBarWindow` reach for). A secondary's `OpenDockPreferences`
+    forwards to the main dock so Preferences stays single-instance.
+  - **A window minimizes into the dock on ITS OWN display.** The process-wide hooks still land on the
+    main dock, which then routes each window to `App.DockFor(hwnd)` (the dock whose pinned monitor
+    rect contains that window's monitor centre; main dock as fallback). Every dock therefore owns its
+    own `_busy` / `_iconMinimized` / `_minimizedSourcePx` / tiles / **pre-warmed animators** — two
+    displays can warp at once — and `PruneStaleMinimized` + `RestoreAllMinimized` run per dock
+    (a secondary closed by `SyncDockMonitors` releases its own windows via `OnClosed`).
+    - **Restores go through `App.DockOwning(hwnd)`, not `DockFor`** — the dock actually holding the
+      window (a window can be dragged to another display while it sits minimized, and with
+      `MinimizeIntoIcon` *every* dock shows the same app icon). `RestoreQueueNext` resolves the owner
+      per window and calls its `RestoreOwnedWindow`, so a tile/icon click, a hover-preview pick and
+      Win+D's restore-all all warp out of the right screen.
+    - `App.AnyDockHandles(hwnd)` is the guard against two docks claiming one window (which would leave
+      two tiles for it); `App.AnyDockWarping()` drives the thumbnail cache's suspend, since every
+      dock's warp renders on the one UI thread.
+    - Still main-dock-only: `SyncPreMinimizedWindows` (an already-iconic window's `MonitorFromWindow`
+      reports (-32000,-32000) → the primary, so startup adoption can't tell which display it belongs
+      to; marked with a `ponytail:` comment naming `rcNormalPosition`/`MonitorFromRect` as the fix).
   - **Shared settings, per-display layout.** Each dock has its own `DockViewModel` (layout depends on
     the monitor's width/DPI) but they all point at the *same* `DockSettings` object via
     `DockViewModel.AttachShared` — which deliberately skips `Load()`'s store read and one-time seeding.
@@ -624,14 +645,13 @@ src/Dockable/
 - **Hover previews** (`WindowPreview` + `Interop/DwmThumbnail`): hovering an app icon that has open
   windows for `PreviewDwellMs` (450 ms) opens a flyout of LIVE window thumbnails above the dock window
   (above the whole window, not the icon — magnified icons + hover labels overflow well past the bar);
-  clicking one raises that window, or restores it with the reverse warp when the dock holds it
-  minimized (`ActivateWindow`; a secondary dock forwards to `App.MainDock`, which owns minimize
-  tracking). Capped at 5 cells. Both the dwell check and the close poll (`PreviewWatchMs`, 150 ms) are
+  clicking one raises that window, or restores it with the reverse warp when a dock holds it
+  minimized (`ActivateWindow` → `App.DockOwning`, so it warps out of the display that holds it). Capped at 5 cells. Both the dwell check and the close poll (`PreviewWatchMs`, 150 ms) are
   **geometry-driven** (`IsCursorOverItem` + `WindowPreview.ContainsCursor`) for the usual reason plus a
   new one: the flyout is a separate window, so WPF sees no leave event for the gap between them —
   and closing needs 2 consecutive away-ticks or the cursor gets cut off mid-transit. The flyout counts
   as auto-hide activity, and any mouse-down on an icon closes it.
-- **Stale representations are polled away** (`PruneStaleMinimized`, from the 1 s tick, main dock only):
+- **Stale representations are polled away** (`PruneStaleMinimized`, from the 1 s tick, on every dock):
   any tracked window that is gone (`!IsWindow` — an app closing while minimized raises no event we hook,
   so its tile used to linger until clicked) or no longer iconic (a missed `EVENT_SYSTEM_MINIMIZEEND`)
   has its tile / `_iconMinimized` entry dropped. `_busy`-guarded so an in-flight warp isn't pruned.
@@ -675,17 +695,40 @@ src/Dockable/
   fresh WPF+3D window per minimize cost 10s–100s ms and was the visible "blink". It maps the capture
   onto an animated `MeshGeometry3D` grid (Viewport3D + orthographic camera) warping into the dock;
   `reverse:true` for restore. Only one genie at a time (shared overlay).
-- **The genie's neck width is the SETTLED tile width** (`TileWidthOf`): a just-added tile is still
-  growing its slot in (AppearScale ≈ 0), so its live RenderWidth reads ~2 DIP at play time — trust
-  it and the warp necks to a dot. TileWidthOf divides RenderWidth by AppearScale mid-grow to
-  project the final width (Suck still pinches to a point by design).
+- **The warp lands just above the ICON'S TOP EDGE, not at its centre** (`LandingY` =
+  `tileTop - LandingLiftDip`, used by both `TileScreenCenter` and `TileRestingScreenCenter`, so
+  minimize and restore share one anchor): the window is swallowed at the mouth of the dock instead of
+  being buried inside the icon. The anchor is the icon's top, **not the bar's** — magnification grows
+  icons upward out of the bar, so a hovered icon's top sits well above `BarTop` and a bar-anchored
+  landing would end inside a zoomed icon. `TileScreenCenter` reads the LIVE (magnified) `tile.Y`;
+  `TileRestingScreenCenter` derives the top from `RestingCenterOf` minus `TileWidthOf/2` (a tile still
+  growing its slot in renders ~2 DIP tall). X still tracks the tile. Bottom-edge only.
+- **Every effect dissolves over its last stretch** (`OverlayAnimatorBase.FadeStartWarp` 0.88 →
+  opacity 0 at warp 1, applied by `ApplyFrameAndFade`). All of them end with their geometry collapsed
+  onto one landing point, so the final frames are a degenerate flat sliver and the hide after it is a
+  hard cut — both read as a glitch, and no choice of end width fixes either (tile-width read as
+  splayed, 2 DIP read as a needle). Opacity is a function of warp ALONE, so a restore mirrors for
+  free (it emerges from the dock). **Every frame-painting path must go through `ApplyFrameAndFade`** —
+  a play that ended faded out would otherwise leave the next `ShowAtSource` invisible, and that frame
+  is what covers the real window while it minimizes behind it.
+- **A NECK, not a cone** — the shape trap this warp keeps falling into. `rowWidth` interpolating on
+  the same eased progress as the descent makes the whole path taper evenly, which reads as a pointed
+  funnel no matter what end width you pick. `WidthPinchPower` (2.5) raises the width's parameter
+  (`wE = e^2.5`) so the body keeps nearly its full width for most of the travel and pinches only in
+  the last stretch, at the dock — the Dock's short neck under a full-width body. The sideways slide
+  (`rowCenterX`) deliberately stays on plain `e`. Neck width is `NeckWidthFactor` 0.85 of the tile
+  (floor 10 DIP): about the icon's own width, since the Dock swallows the sheet into something
+  icon-sized rather than converging to a tip. `TileWidthOf` also feeds **ScaleAnimator**, where its note
+  still matters: a just-added tile is still growing its slot in (AppearScale ≈ 0), so
+  its live RenderWidth reads ~2 DIP at play time — `TileWidthOf` divides by AppearScale mid-grow to
+  project the settled width.
 - Orchestration in `DockWindow` (`InterceptedMinimize`/`MinimizeOneAnimated`/`MinimizeToDock` for
   minimize; `OnWindowMinimizing` reactive fallback; `RestoreMinimized`/`RestoreWindowAnimated` for
   restore); `_busy` set guards re-entrancy. Rough edges: minimizes that fall through to the reactive
   path (taskbar/menu/programmatic, or custom title bars the button-hit-test misses) can still flash the
   OS animation briefly; DRM/protected windows capture black; pre-minimized/elevated windows have no
   thumbnail (app icon stands in); 
-  multi-monitor genie target approximate.
+  a window already minimized BEFORE launch is adopted onto the main dock regardless of its display.
 
 ### macOS-style menu bar (top AppBar) — on by default (opt-out)
 - Enabled via `DockSettings.ShowMenuBar` (Dock Preferences toggle or tray "Show menu bar"). **App owns
@@ -906,8 +949,15 @@ src/Dockable/
     like "reserving for the magnified dock").
     **The hide only sticks because `Interop/TaskbarHideWatcher` re-asserts it** — auto-hide leaves an
     edge sensor, and the dock lives on that same edge, so Explorer re-shows the tray the first time the
-    user reaches for the dock. The watcher **polls** (thread-pool `Timer`, 40 ms: two `FindWindow`s,
-    `SW_HIDE` only when something is actually visible). It used to be an `EVENT_OBJECT_SHOW` WinEvent
+    user reaches for the dock. The watcher **polls** (thread-pool `Timer`, 40 ms; `SW_HIDE` only when
+    something is actually visible).
+    **`Taskbar.cs` must never use `FindWindow` for the tray** — measured on Win11 25H2: an Explorer
+    restart leaves a stale **0x0 `Shell_TrayWnd` behind from the dead instance's pid**, so there are
+    two windows of that class and `FindWindow` (class match in z-order) hands back whichever is
+    higher. Landing on the ghost made the probe report "nothing visible" while the real taskbar sat on
+    screen, and it was never re-hidden. Every operation now sweeps `ForEachTrayWindow` (both classes —
+    secondary bars do NOT reliably carry `Shell_SecondaryTrayWnd` on current builds); `PrimaryTray()`
+    picks the first candidate with a real rect for the appbar-state messages. It used to be an `EVENT_OBJECT_SHOW` WinEvent
     hook scoped to Explorer; that was **measured not to fire** for these re-shows on Win11 25H2
     (build 26200) — the tray sat visible seconds after a forced `SW_SHOW`, and was visible again right
     after launch. Don't "optimize" it back into a hook without re-measuring. `Stop()` waits for an

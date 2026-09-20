@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
@@ -112,6 +112,8 @@ public partial class App : Application
 
         bool all = DockViewModel.Settings.ShowDockOnAllMonitors;
         _dockWindow.PinToMonitor(monitors[0]); // Monitors.All puts the main display first
+        // Only the displays that actually have a dock get a cursor-approach raise band.
+        _dockWindow.RefreshRaiseZones(all ? monitors : monitors.Take(1).ToList());
 
         string layout = string.Join("|", monitors) + "|" + all;
         if (layout == _monitorLayout)
@@ -149,6 +151,55 @@ public partial class App : Application
         _dockWindow?.SetCaptureFriendly(on);
         foreach (var dock in _extraDocks)
             dock.SetCaptureFriendly(on);
+    }
+
+    /// <summary>Every dock, main display first.</summary>
+    internal IEnumerable<DockWindow> Docks
+    {
+        get
+        {
+            if (_dockWindow is not null)
+                yield return _dockWindow;
+            foreach (var dock in _extraDocks)
+                yield return dock;
+        }
+    }
+
+    /// <summary>The dock a window should minimize into: the one on that window's own display, falling
+    /// back to the main dock (which is also the only dock when "show on all displays" is off).</summary>
+    internal DockWindow DockFor(IntPtr hwnd)
+    {
+        var monitorPx = Monitors.ForWindow(hwnd).MonitorPx;
+        // Test the monitor's CENTRE rather than comparing rects: both come from the same shell APIs, but
+        // a hotplug can hand back a stale pinned rect and containment still resolves sanely.
+        var centre = new Point(monitorPx.Left + monitorPx.Width / 2, monitorPx.Top + monitorPx.Height / 2);
+        foreach (var dock in Docks)
+            if (dock.PinnedMonitorPx is { } px && px.Contains(centre))
+                return dock;
+        return _dockWindow!;
+    }
+
+    /// <summary>The dock currently holding a window's minimized representation (tile or stashed into its
+    /// icon), or null when nothing is. Restores and external-restore cleanup go through this, not
+    /// <see cref="DockFor"/> — a window can be moved to another display while it sits minimized.</summary>
+    internal DockWindow? DockOwning(IntPtr hwnd) => Docks.FirstOrDefault(d => d.RepresentsWindow(hwnd));
+
+    /// <summary>Whether any dock is already warping or representing this window — the guard against two
+    /// docks both claiming it (which would leave two tiles for one window).</summary>
+    internal bool AnyDockHandles(IntPtr hwnd) => Docks.Any(d => d.IsWarping(hwnd) || d.RepresentsWindow(hwnd));
+
+    /// <summary>Whether a minimize/restore warp is in flight on any display.</summary>
+    internal bool AnyDockWarping() => Docks.Any(d => d.HasWarpInFlight);
+
+    /// <summary>Re-asserts every dock at the top of the topmost band. Fired as the cursor reaches for a
+    /// dock, so a self-raising topmost window (picture-in-picture, a tiling WM) can't still be holding
+    /// the top of the band when the click lands. Each dock keeps its own guards (own-process foreground,
+    /// an open menu/flyout, a warp in flight), so this is safe to call often.</summary>
+    internal void KeepDocksOnTop()
+    {
+        _dockWindow?.KeepOnTop();
+        foreach (var dock in _extraDocks)
+            dock.KeepOnTop();
     }
 
     /// <summary>Parks/resumes every display's Liquid Glass backdrop capturer while a minimize/restore
