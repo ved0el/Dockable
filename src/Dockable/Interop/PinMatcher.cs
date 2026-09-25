@@ -1,3 +1,4 @@
+using Dockable.Shell;
 using System.Collections.Concurrent;
 using System.IO;
 
@@ -42,8 +43,16 @@ public readonly struct PinMatcher
     private static PinMatcher Create(string pinPath)
     {
         bool isLink = pinPath.EndsWith(".lnk", Ci);
-        string? targetExe = isLink ? TaskbarApps.ResolveLinkTarget(pinPath) : pinPath;
-        string? aumid = isLink ? TaskbarApps.GetLinkAumid(pinPath) : null;
+        // "shell:AppsFolder\<aumid>" is what pinning a RUNNING packaged app stores — it's an AUMID,
+        // not an exe path; treating it as one meant the pin never claimed its windows (Teams showed
+        // pinned-but-idle plus a second running tile).
+        bool isAppsFolder = pinPath.StartsWith(PackagedApp.AppsFolderPrefix, Ci);
+        string? targetExe = isLink ? TaskbarApps.ResolveLinkTarget(pinPath) : isAppsFolder ? null : pinPath;
+        string? aumid = isLink ? TaskbarApps.GetLinkAumid(pinPath)
+            : isAppsFolder ? pinPath[PackagedApp.AppsFolderPrefix.Length..]
+            : null;
+        // A pinned WindowsApps exe carries its package version in the path; its AUMID survives updates.
+        aumid ??= PackagedApp.AumidForExe(targetExe);
         string? targetDir = string.IsNullOrEmpty(targetExe) ? null : Path.GetDirectoryName(targetExe);
         bool explorerLike = string.Equals(aumid, "Microsoft.Windows.Explorer", Ci);
 
@@ -59,8 +68,11 @@ public readonly struct PinMatcher
         if (!string.IsNullOrEmpty(_targetExe) && string.Equals(window.ExePath, _targetExe, Ci))
             return true;
 
-        if (!string.IsNullOrEmpty(_aumid) && !string.IsNullOrEmpty(window.Aumid)
-            && string.Equals(window.Aumid, _aumid, Ci))
+        // Manifest AUMID first, same as DockViewModel.IdentifyWindow: Teams' windows advertise
+        // "…!MSTeams.Work", which never equals the registered "…!MSTeams" a pin holds.
+        if (!string.IsNullOrEmpty(_aumid)
+            && (string.Equals(PackagedApp.AumidForExe(window.ExePath), _aumid, Ci)
+                || string.Equals(window.Aumid, _aumid, Ci)))
             return true;
 
         if (_explorerLike && string.Equals(Path.GetFileName(window.ExePath), "explorer.exe", Ci))
