@@ -128,225 +128,56 @@ overloads, namespaces), build once with the files emitted and read them:
 
 ---
 
-## Project structure
+## Per-file gotchas
 
-```
-src/Dockable/
-  App.xaml(.cs)          Entry point + owner of the per-display docks (SyncDockMonitors / MainDock /
-                         the debounced ReapplySharedSettings broadcast) and the menu bar window.
-                         Single-instance (named Mutex); startup wrapped in try/catch
-                         that logs + MessageBoxes + exits (so failures aren't silent zombies);
-                         crash logging (%APPDATA%\Dockable\crash.log); DispatcherUnhandledException
-                         kept non-fatal; exit/crash restore the taskbar (auto-hide off).
-  DockWindow.xaml(.cs)   The dock. Owns: positioning + AppBar reservation, tray menu, context menus,
-                         magnification render loop, custom drag-reorder, taskbar-app refresh timer +
-                         pinned-folder watcher, minimize/restore orchestration, glass-backdrop +
-                         taskbar native auto-hide control, theme application (ApplyTheme/SetTheme),
-                         and About/Preferences window launch.
-  SettingsWindow.xaml(.cs) "Dock Preferences" window (separator right-click or tray). Light,
-                         macOS-style. Sections: System (Language + Performance + Open-at-login),
-                         Appearance (Light/Dark/Auto tiles), Dock (Size/Magnification, Position,
-                         Glass Effect, Minimize effect, Effect Speed, toggles incl. Auto-hide),
-                         Taskbar. Most rows are wired live (Position only implements Bottom).
-                         **Settings search**: a sidebar search box filters `SettingsIndex` (entries =
-                         panel tag + Loc name key + a row-resolver + English synonym tags; names match
-                         in the UI language, tags in English); results replace the nav list; clicking
-                         navigates + scrolls to and PULSES the row (accent tint fading back — whole
-                         panels navigate with no pulse). Rows are found by walking up from the named
-                         control (`RowOf`); new settings should be added to the index.
-  MenuBarWindow.xaml(.cs) Optional macOS-style menu bar: a thin top AppBar (primary monitor) showing the
-                         focused window's title, a clickable keyboard-layout switcher, Quick-Settings
-                         (Win+A) + Notifications (Win+N) buttons, and a clock. Its own AppBarManager
-                         (WM_USER+2) + AcrylicBackdrop + ApplyTheme; no magnification/clipping (window ==
-                         bar). Owned by App (created/closed per Settings.ShowMenuBar). See feature area below.
-  WindowPreview.cs       Hover preview flyout: live DWM thumbnails of an app's open windows, above its
-                         dock icon. A plain OPAQUE window (not a Popup, not AllowsTransparency) because
-                         DWM refuses to mirror into a layered window; Win11 rounded corners via
-                         DWMWA_WINDOW_CORNER_PREFERENCE. Reused across opens, cells laid out by
-                         arithmetic so the same numbers can be handed to DWM in physical px.
-  ConfirmDialog.cs       Code-built Yes/No prompt with optional "Do not ask again".
-  InputDialog.cs         Code-built single-line text prompt (OK/Cancel) — e.g. Rename.
-  AppIcon.cs             The app's own icon loaded once: Large (256px png, windows/Alt-Tab) and
-                         Tray (the multi-size Dockable.ico — its 16/32px frames stay crisp in the tray).
-  Sounds.cs              Short UI WAV effects (empty-trash / drag-to-trash / remove) via SoundPlayer,
-                         loaded from embedded `pack://` resources (so the single-file build has no loose .wav).
-  UiBrushes.cs           Shared frozen-brush-from-hex helper + the recurring palette hex constants
-                         (AccentHex/InkHex/SurfaceHex) — use it instead of re-rolling a private Brush(hex).
-  MenuBuilder.cs         AddItem/AddCheckable for the code-built menus' PLAIN items (header + click).
-                         Items with dynamic headers (Quit/Force Quit), Icons, or sender-aware handlers
-                         stay hand-built at their call sites — don't force them through the helper.
-  DialogChrome.cs        Shared scaffolding of the code-built dialogs (frameless shell, message block,
-                         rounded surface card, Cancel/OK button row); per-dialog content stays local.
-  app.manifest           Per-monitor-v2 DPI awareness; asInvoker.
-  NativeMethods.txt      CsWin32 API list.
+The layout is what `ls src/Dockable` shows; these are the notes the code doesn't make obvious.
 
-  Themes/
-    ModernMenu.xaml      Windows 11-style context-menu styles (implicit, app-wide; merged in App.xaml).
-  Accessibility/
-    DockItemElement.cs   The dock item template's root (a Grid subclass): its UIA peer names each item
-                         (DisplayName + running/minimized state) and exposes Invoke → DockWindow.ActivateItem.
-    A11y.cs              InvokableRow/InvokableCell — StackPanel/Border subclasses with a UIA Button peer
-                         whose Invoke replays MouseLeftButtonUp; used by the code-built click targets
-                         (fan/grid rows, settings search rows, menu-bar pills).
-  Localization/
-    LocData.cs           Per-language string tables (en, pt-BR, es, uk, zh-Hans) + the picker list.
-    Loc.cs               Runtime service: indexer + T(key); SetLanguage (live) raises Item[]/event;
-                         Initialize resolves saved-or-OS culture → English fallback.
-    LocExtension.cs      {loc:Loc Key=…} XAML markup extension → binds to Loc.Instance[Key].
-  Models/
-    DockItemKind.cs      enum: StartMenu, Shortcut, Separator, MinimizedWindow, TaskbarApp,
-                         RecycleBin, PinnedFolder, PinnedFile.
-    DockItem.cs          Persisted/transient item shape + factory methods.
-    DockSettings.cs      Root settings + DockEdge/GlassEffect/DockTheme/MinimizeEffect enums
-                         (see Settings schema below).
-    PinnedPath.cs        A pinned file/folder + its FolderSortBy/FolderDisplayAs/FolderViewContentAs.
-  ViewModels/
-    MenuBarViewModel.cs  Menu bar state: shared DockSettings (theme/glass) + live Title/KeyboardLabel/TimeText.
-    DockViewModel.cs     Owns Items (ObservableCollection), Settings, geometry props; composes
-                         sections (Start + apps + separator + minimized + pinned files/folders +
-                         Recycle Bin) and reconciles in place; taskbar-app refresh + matching;
-                         dock-owned pin + pinned-path mutations.
-    DockItemViewModel.cs Per-item: Icon, X/Y/RenderSize/CurrentScale (layout), IsRunning, IsPinned,
-                         IsDragging, Hwnd, AppKey, LaunchPath, Windows.
-    DockLayoutEngine.cs  Fisheye magnification + live drag layout + window/bar geometry.
-  Services/
-    SettingsStore.cs     Atomic JSON load/save of DockSettings (%APPDATA%\Dockable\settings.json).
-    PinIconCache.cs      %APPDATA%\Dockable\icons cache for custom pin icons: a user-chosen .png/.svg
-                         is IMPORTED (content-addressed copy) so the pin survives the original moving;
-                         cached files are deleted when no pin references them anymore.
-  Shell/
-    ShortcutService.cs   Launch(path) via shell; RevealInExplorer; LoadIconAsync
-                         (IShellItemImageFactory → 256px, alpha-correct, off UI thread, E_PENDING retry;
-                         pixels read via GetDIBits with an explicit top-down target — see Known decisions).
-                         Exes go through PrivateExtractIcons, which STRETCHES the frame it picks up to the
-                         requested size — so `NativeIconWidth` reads the chosen RT_ICON's real width
-                         (piconid → LoadLibraryEx AS_DATAFILE → FindResource; PNG IHDR or BITMAPINFOHEADER)
-                         and re-extracts at that size when it's SMALLER. One WPF resample instead of a GDI
-                         upscale plus a WPF downscale. Downscales are left alone (real detail, not a blur).
-                         Every icon then goes through `TrimToArtwork` (see the magnification notes):
-                         cropped to its opaque bounds via CroppedBitmap — a view, so no extra resample —
-                         so a fat transparent margin can't make one app render smaller than the next.
-                         Icons already drawn edge-to-edge come back untouched. Window CAPTURES never
-                         pass through here, so minimized thumbnails keep their full frame.
-    FolderContents.cs    A pinned folder's sorted top-level listing (+ shell "Kind" names via SHGetFileInfo).
-    StackIcon.cs         Composites a folder's top items into the Stack tile bitmap.
-    SvgIcon.cs           Renders .svg/.svgz to icons via SharpVectors (hooked into LoadIconAsync).
-    PackagedApp.cs       MSIX/Store apps: reads AppxManifest.xml once per exe (cached, also keyed by
-                         AUMID) for the launchable AUMID and the app's Square44x44Logo. LargestLogo()
-                         returns the biggest UNPLATED asset on disk (unqualified / scale-* /
-                         *_altform-unplated — a plain targetsize-* can have the logo baked onto a solid
-                         square) with its pixel width. LoadIcon reads that file at its NATIVE size when
-                         it is SMALLER than the size requested: the shell scales whatever it picks up to
-                         the request, and many packages ship nothing near 256 (Teams' app-list art is
-                         176px), so going through it upscales and WPF then shrinks that again — the
-                         aliasing those tiles used to show. Assets BIGGER than the request keep going
-                         through the shell (same upscale-only rule as the PE path; avoids holding a
-                         1024px bitmap for a 20 DIP badge).
-  Interop/
-    SynthesizedInput.cs  Shared SendInput chord helper (press in order, release in reverse) behind the
-                         four OS-gesture openers below.
-    WinEventHook.cs      Owns one SetWinEventHook registration: delegate lifetime, double-start guard,
-                         stop/RESTART support, optional pid scoping, and the universal
-                         idObject==0 && idChild==0 "window itself" filter. All the WinEvent watchers
-                         (MinimizeHook, ForegroundWatcher, TitleWatcher ×2,
-                         Genie/WindowThumbnailCache) compose instances of it.
-    DwmThumbnail.cs      One live DWM window thumbnail (register/aspect-fit/unregister) — the taskbar's
-                         own preview mechanism, so it works for occluded AND minimized windows (a screen
-                         BitBlt of either grabs the occluder or nothing).
-    StartMenu.cs         Open Start via a synthesized Win keypress (SynthesizedInput).
-    QuickSettings.cs     Open the OS Quick Settings flyout (network/sound) via synthesized Win+A.
-    Notifications.cs     Open the OS Notification Center / calendar flyout via synthesized Win+N.
-    TrayOverflow.cs      Open the system-tray overflow ("show hidden icons") flyout via synthesized
-                         Win+B (focus the tray, reveal the taskbar) then Enter (activate the chevron).
-                         Call off the UI thread (it sleeps 200 ms between the chords).
-    SystemActions.cs     Menu-bar Windows-logo menu power/session actions: Sleep (SetSuspendState),
-                         Lock (LockWorkStation), Restart/ShutDown/LogOut (shell out to shutdown.exe).
-    TitleWatcher.cs      SetWinEventHook(EVENT_SYSTEM_FOREGROUND + EVENT_OBJECT_NAMECHANGE) → TitleChanged
-                         (menu bar's live focused-window title).
-    KeyboardLayouts.cs   Current layout (GetKeyboardLayout) + installed list (GetKeyboardLayoutList) +
-                         switch the foreground app (PostMessage WM_INPUTLANGCHANGEREQUEST).
-    AppMenu.cs           AppMenuEntry model (+ AppMenuSource enum) for the menu bar's mirrored app menus.
-    Win32AppMenu.cs      Tier-1 global menus: read a window's classic HMENU bar cross-process
-                         (GetMenu/GetMenuString), host its dropdown from our bar (TrackPopupMenuEx +
-                         WM_INITMENUPOPUP relay), post the pick back (WM_COMMAND / WM_MENUCOMMAND).
-    UiaAppMenu.cs        Tier-2 fallback: UI Automation MenuBar scan (WPF/Electron/Qt); labels mirror,
-                         but invoking expands the app's OWN menu in place. Cached per HWND (incl.
-                         negative); reads/invokes run off the UI thread (huge UIA trees are slow).
-    Monitors.cs          Per-monitor bounds/workarea (px) + DPI for a window; All() enumerates every
-                         monitor's bounds (physical px, MAIN DISPLAY FIRST) for the per-display docks.
-    AppBarManager.cs     SHAppBarMessage register/reserve (always-visible docking).
-    Taskbar.cs           Toggle the taskbar's NATIVE auto-hide (SHAppBarMessage ABM_SETSTATE);
-                         also SW_SHOWs the tray windows to undo any legacy force-hide.
-    TaskbarHideWatcher.cs  Keeps the tray SW_HIDDEN in "Never" mode — a 40 ms thread-pool poll that
-                         re-hides anything Explorer re-shows (an edge-hover reveal, attention flash,
-                         Win+D). NOT a WinEvent hook: that was measured not to fire (see below).
-    TaskbarWatchdog.cs   Out-of-process restore safety net: spawns a hidden powershell.exe (different
-                         image name — survives kill-by-name; no extra binary to ship, so the portable
-                         single-file build is unaffected) that Wait-Process-es on the dock's PID, then
-                         restores the pre-launch taskbar state via SHAppBarMessage/ShowWindow (Add-Type
-                         C#, kept C# 5 / PS 5.1-safe) and exits. Skips the restore if a new dock
-                         instance is already running (quick restart race).
-    TaskbarApps.cs       Read taskbar pins (registry order + .lnk targets/AUMIDs) + enumerate
-                         taskbar-eligible app windows. Per-window exe path + AUMID are CACHED by HWND
-                         (IdentityCache: pid-checked against handle recycling, empty AUMIDs retried ≤3×
-                         for late-setting apps, dead HWNDs evicted each enumeration) — resolving them
-                         fresh was the 1 s refresh's main cost. Titles stay live/uncached; the public
-                         GetWindowExePath/GetWindowAumid keep uncached semantics for event-driven callers.
-    PinMatcher.cs        Multi-strategy "does this window belong to this pin?". Built matchers are
-                         cached per pin path (their inputs are already permanently memoized).
-    WindowFilter.cs      Shared "is this a normal app window" test (internal; takes HWND).
-    MinimizeHook.cs      SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART..MINIMIZEEND) → WindowMinimizing /
-                         WindowUnminimized events (the latter for external taskbar/Alt+Tab restores).
-    MinimizeInterceptHook.cs  Also owns the dock's cursor-approach z-order raise: `RaiseZones` (bands
-                         along each docked display edge, published by `DockWindow.RefreshRaiseZones`
-                         from `App.SyncDockMonitors`) + `CursorEnteredRaiseZone` → `App.KeepDocksOnTop`.
-                         A PiP player / tiling WM sits in the same topmost band, so last-raiser wins and
-                         the 1 s `KeepOnTop` backstop could leave the dock buried when a click lands.
-                         Low-level WH_MOUSE_LL + WH_KEYBOARD_LL hooks that PRE-EMPT a minimize
-                         gesture so the warp's frame 0 paints before the OS minimizes (no flash):
-                         min-button click (NCHITTEST==HTMINBUTTON, else DWMWA_CAPTION_BUTTON_BOUNDS
-                         left-third; arm-on-down, act-on-up, swallow both) → MinimizeRequested; Win+Down
-                         → MinimizeRequested; Win+M → MinimizeAllRequested.
-    ForegroundWatcher.cs SetWinEventHook(EVENT_SYSTEM_FOREGROUND) → ForegroundChanged event.
-    Fullscreen.cs        Shared test: is the foreground window covering a given window's monitor
-                         (exclusive or borderless-fullscreen)? Used by the dock + menu bar to hide.
-    WindowControl.cs     Per-window transitions suppression, minimize/restore (incl. no-activate +
-                         no-foreground variants), activate, restore-rect.
-    SystemTheme.cs       Reads the Windows light/dark app theme (registry AppsUseLightTheme); also
-                         IsDarkEffective(DockTheme) + IsImmersiveColorChange(lParam), shared by the
-                         dock's and menu bar's ApplyTheme/WndProc so the two never drift.
-    StartupManager.cs    HKCU Run-key "run at login" entries (IsEnabled/Enable/Disable).
-    RecycleBin.cs        IsEmpty / Empty (with OS prompt) / SendToRecycleBin (SHFileOperation
-                         FO_DELETE + FOF_ALLOWUNDO); state-aware empty/full icon via the shell.
-    KnownFolders.cs      SHGetKnownFolderPath (the Downloads seed — the folder can be relocated).
-    AcrylicBackdrop.cs   Separate non-layered click-through backdrop window hosting a
-                         Windows.UI.Composition acrylic blur, clipped to the bar's rounded rect.
-    ShaderCompiler.cs    Compiles HLSL → ps bytecode at runtime via d3dcompiler_47 (no fxc).
-  Genie/
-    WindowCapture.cs     BitBlt(CAPTUREBLT) screen-grab of a window → BitmapSource.
-    WindowThumbnailCache.cs  Caches a recent capture per visible window; also proactively suppresses
-                         the foreground window's OS transitions.
-    OverlayAnimatorBase.cs  Shared engine for both animators: the pre-warmed click-through overlay
-                         window lifecycle, the render loop (frame-rate cap that NEVER skips the final
-                         frame), FinishCurrent (finalize an in-flight play so its onCompleted isn't
-                         lost), and the _playSeq-guarded restore hold. Subclasses supply
-                         BuildOverlayContent/SetContent/PreparePlay/ApplyFrame(warp)/BaseDurationMs.
-                         Owns the VELOCITY CURVE: `Emphasized` (front-loaded, zero velocity at both
-                         ends — between Apple's easeOut and Material 3's "emphasized") is applied to
-                         PROGRESS and then mirrored for a restore, never the other way round (mirroring
-                         an eased value inverts the curve, so a restore would arrive at a hard stop).
-                         Restores run RestoreDurationFactor (1.15×) longer than minimizes. Subclasses
-                         SHAPE the eased warp (the genie's per-row stagger) and must not re-ease it.
-    GenieAnimator.cs     WPF-3D mesh-warp subclass; Style = Suck or Genie curve; RefreshQuality
-                         tears the overlay down so the next play rebuilds the mesh.
-    ScaleAnimator.cs     Subclass that scales the capture down to the tile.
-    IMinimizeAnimator.cs Common Play/Prewarm interface; DockWindow picks the animator per setting.
-    RefractionEffect.cs  WPF ShaderEffect refracting the captured backdrop (liquid-glass rim distortion).
-  Converters/
-    BoolToVisibilityConverter.cs  + FallbackVisibilityConverter (multi-binding).
-```
-
-`Dockable.sln` is at the repo root.
+- **App.xaml.cs** — startup is wrapped in try/catch that logs + MessageBoxes + exits, so a failure is
+  never a silent zombie; `DispatcherUnhandledException` is kept non-fatal; exit/crash restore the taskbar.
+- **SettingsWindow** — settings search runs over `SettingsIndex` (panel tag + Loc name key + row
+  resolver + English synonym tags; names match in the UI language, tags in English). Rows are found by
+  walking up from the named control (`RowOf`). **New settings must be added to the index.**
+- **WindowPreview** — a plain OPAQUE window (not a Popup, not AllowsTransparency): DWM refuses to mirror
+  a thumbnail into a layered window. Cells are laid out by arithmetic so the same numbers go to DWM in
+  physical px. `Interop/DwmThumbnail` works for occluded AND minimized windows (a BitBlt of either
+  grabs the occluder or nothing).
+- **UiBrushes** — use it for frozen brushes from hex + the shared palette constants; don't re-roll a
+  private `Brush(hex)`.
+- **MenuBuilder** — only for PLAIN menu items. Dynamic headers (Quit/Force Quit), Icons and
+  sender-aware handlers stay hand-built at their call sites.
+- **DialogChrome** — shared scaffolding for the code-built dialogs (ConfirmDialog, InputDialog); keep
+  per-dialog content local.
+- **Accessibility/A11y** — code-built click targets (fan/grid rows, search rows, menu-bar pills) use
+  `InvokableRow`/`InvokableCell`, whose UIA Invoke replays `MouseLeftButtonUp`. `DockItemElement`'s peer
+  names each dock item and routes Invoke → `DockWindow.ActivateItem`.
+- **Shell/ShortcutService** — exes go through `PrivateExtractIcons`, which STRETCHES the frame it picks
+  to the requested size, so `NativeIconWidth` reads the chosen RT_ICON's real width (piconid →
+  LoadLibraryEx AS_DATAFILE → FindResource; PNG IHDR or BITMAPINFOHEADER) and re-extracts at that size
+  when SMALLER. Downscales are left alone. Window captures never pass through `LoadIconAsync`.
+- **Shell/PackagedApp** — `LargestLogo()` returns the biggest UNPLATED asset (unqualified / scale-* /
+  *_altform-unplated; a plain targetsize-* can have the logo baked onto a solid square). `LoadIcon` reads
+  it at NATIVE size when smaller than requested (the shell would upscale it; Teams ships 176px); bigger
+  assets still go through the shell.
+- **Shell/SvgIcon** — the visual + RenderTargetBitmap are created and frozen on the loader's worker thread.
+- **Interop/WinEventHook** — every WinEvent watcher composes it (delegate lifetime, double-start guard,
+  restart, pid scoping, the idObject==0 && idChild==0 filter). New watchers should too.
+- **Interop/SystemTheme** — `IsDarkEffective` / `IsImmersiveColorChange` are shared by the dock's and
+  menu bar's ApplyTheme/WndProc so the two never drift.
+- **Interop/TaskbarApps** — per-window exe path + AUMID are cached by HWND (`IdentityCache`: pid-checked
+  against handle recycling, empty AUMIDs retried ≤3× for late-setting apps, dead HWNDs evicted each
+  enumeration). Titles stay live. The public `GetWindowExePath`/`GetWindowAumid` keep UNCACHED semantics
+  for event-driven callers.
+- **Interop/PinMatcher** — built matchers are cached per pin path (their inputs are permanently memoized).
+- **Interop/MinimizeInterceptHook** — also owns the cursor-approach z-order raise: `RaiseZones` (bands
+  along each docked edge, published by `DockWindow.RefreshRaiseZones` from `App.SyncDockMonitors`) +
+  `CursorEnteredRaiseZone` → `App.KeepDocksOnTop`. A PiP player / tiling WM shares the topmost band, so
+  last-raiser wins and the 1 s `KeepOnTop` backstop alone could leave the dock buried when a click lands.
+- **Genie/OverlayAnimatorBase** — owns the velocity curve: `Emphasized` (front-loaded, zero velocity at
+  both ends) is applied to PROGRESS and then mirrored for a restore, never the other way round
+  (mirroring an eased value inverts the curve, so a restore would arrive at a hard stop). Restores run
+  `RestoreDurationFactor` (1.15×) longer. Subclasses SHAPE the eased warp (the genie's per-row stagger)
+  and must not re-ease it. `GenieAnimator.RefreshQuality` tears the overlay down so the next play
+  rebuilds the mesh.
 
 ---
 
@@ -427,6 +258,9 @@ src/Dockable/
 ---
 
 ## Feature areas (detail)
+
+> Menu-bar and taskbar-visibility notes live in `.claude/rules/menu-bar.md` and `.claude/rules/taskbar.md`;
+> they load automatically when Claude touches those files.
 
 ### Taskbar mirror + dock-owned pins
 - The dock shows **Start + taskbar apps (pinned + running) + minimized tiles**. App data from
@@ -730,102 +564,6 @@ src/Dockable/
   thumbnail (app icon stands in); 
   a window already minimized BEFORE launch is adopted onto the main dock regardless of its display.
 
-### macOS-style menu bar (top AppBar) — on by default (opt-out)
-- Enabled via `DockSettings.ShowMenuBar` (Dock Preferences toggle or tray "Show menu bar"). **App owns
-  the window's lifetime** (`App.SetMenuBarVisible`): the dock's `SetShowMenuBar` persists the setting and
-  calls into `App`; the menu bar is created on first show and `Close()`d (which `Unregister()`s its AppBar)
-  when toggled off. `ShutdownMode=OnExplicitShutdown`, so adding/closing this window is safe.
-- `MenuBarWindow` is a sibling of `DockWindow` but **much simpler**: a flat full-width bar flush to the
-  top of the **primary monitor** (window rect == bar rect, so **no `SetWindowRgn` clipping** and no
-  magnification). Its own `AppBarManager(_hwnd, WM_USER+2)` reserves the top strip (`MenuBarHeight`, 28 DIP)
-  via `ReserveEdge(DockEdge.Top, …)`; `WndProc` handles `ABN_POSCHANGED` (re-reserve) + `WM_SETTINGCHANGE`
-  (re-theme when System). **Always acrylic**: reuses `AcrylicBackdrop` (corner radius 0), always shown
-  (independent of the dock's Glass Effect setting). **No border.** `ApplyTheme()` paints the bar with the
-  dock's own bar colours at **50% transparency** (light `#80FFFFFF`, dark `#80242424`) over the blur, and
-  swaps `MenuTextBrush` to contrast per the Appearance theme (dark `#F2F2F2` / light `#1D1D1F`).
-- Content: **leading** = the app's launcher glyph (`StartGlyphGeometry` in App.xaml — an ORIGINAL
-  four-rounded-unequal-tiles mark, deliberately NOT the trademarked Windows flag, which third parties
-  can't reproduce without a license; same geometry as the dock's Start tile, tinted with
-  `MenuTextBrush`; click → an Apple-menu-style command `ContextMenu` built fresh each open:
-  About This PC (`ms-settings:about`) / System Settings (`ms-settings:`) / Microsoft Store / **Recent
-  Apps** submenu (open apps grouped by exe/AUMID; pick one → `WindowControl.ActivateAll` raises all its
-  windows) / Force Quit \<focused app\> (`Process.Kill`) / Sleep / Restart… / Shut Down… / Lock Screen /
-  Log Out \<user\>… — power/session items via `Interop/SystemActions`; the "…" ones confirm via
-  `ConfirmDialog(showDoNotAskAgain:false)`) then the focused app's **friendly display name** — e.g.
-  "Google Chrome" (not "chrome", not the window title), resolved by
-  `DockViewModel.AppDisplayNameForWindow` (exposed as `MenuBarViewModel.AppDisplayName`) — **the same
-  funnel that names the dock tiles**, so the bar and dock never disagree (a separate `Shell/ForegroundApp`
-  resolver used to exist; it drifted — "Windows Terminal Host", raw "SnippingTool.exe" — and was deleted).
-  Tile-first: a window represented by a dock tile returns the tile's label (which benefits from the
-  identity cache's AUMID retries and remembered pin names); unrepresented windows derive the way tiles
-  do: packaged AUMID → `shell:AppsFolder` name, else remembered pin name →
-  `FileVersionInfo.FileDescription` → extension-less stem (never a raw "Foo.exe") → window title.
-  The Recent Apps submenu and the startup seed use the same funnel. The bar tracks the last real app (`_appHwnd`, via `Interop/TitleWatcher`,
-  skipping our own process — EXCEPT the Dock Preferences window, which is represented like any app
-  under its dock-tile name `Window_DockPreferences`, with no mirrored menus: it's WPF/no HMENU, and
-  UIA-scanning one's own process is deadlock-prone. The dock/menu-bar windows themselves stay
-  skipped); at startup, when launching the dock made US foreground, it seeds from the top-most
-  non-minimized app window in Z-order (`SeedFromTopmostAppWindow`) so the name + app menus show
-  immediately instead of waiting for the first focus change; a represented window that dies (e.g.
-  Preferences closed, focus fell to the dock) is dropped and re-seeded the same way. **Click the name** → the focused window's title-bar menu, reproduced by
-  posting the non-client right-click messages (`WM_NCRBUTTONDOWN`/`WM_NCRBUTTONUP` with `HTCAPTION`) to
-  the target so its **own** `DefWindowProc` shows the menu in its process (a cross-process
-  `GetSystemMenu`+`TrackPopupMenu` doesn't work — the menu is owned by the other process; this also
-  honours custom title-bar menus like Chrome's). `SetForegroundWindow(target)` first so it tracks/dismisses
-  correctly. **Trailing** cluster (a clock
-  `DispatcherTimer`, 1 s): a **tray-overflow chevron** (`TrayOverflow.Open` — synthesizes Win+B then Enter
-  to open the "show hidden icons" flyout; reveals the auto-hidden taskbar), **Quick Settings** (`QuickSettings.Open` → Win+A),
-  **Notifications** (`Notifications.Open` → Win+N), a clickable **keyboard layout** (`KeyboardLayouts`: shows the foreground
-  thread's layout; click → a code-built `ContextMenu` of installed layouts → `Switch` posts
-  `WM_INPUTLANGCHANGEREQUEST` to the foreground), and the **clock** (culture-aware, follows `Loc`).
-- **Global app menus (two tiers):** after the app name, the bar mirrors the focused window's in-window
-  menu ("File", "Edit", …) as clickable labels (`MenuBarViewModel.MenuEntries`, refreshed on foreground
-  hwnd change with a `_menuGen` stale-guard). **Tier 1 (Win32/HMENU** — Notepad++, 7-Zip, most classic
-  apps): `Interop/Win32AppMenu` reads the bar cross-process (`GetMenu`/`GetMenuString` — menus are shared
-  USER objects, no injection) and a click hosts the app's REAL dropdown under the label:
-  `WM_INITMENUPOPUP` is sent first (timeout-guarded, so lazily-populated menus are live), then
-  `TrackPopupMenuEx(TPM_RETURNCMD)` tracks the foreign submenu from our window (foreground handoff +
-  `WM_NULL` after, tray-menu style) and the picked id is posted back as `WM_COMMAND`. `MNS_NOTIFYBYPOS`
-  menus track without `TPM_RETURNCMD` and relay `WM_MENUCOMMAND` instead; while a foreign popup is up,
-  `MenuBarWindow.WndProc` relays nested-submenu `WM_INITMENUPOPUP`/`WM_UNINITMENUPOPUP` to the target
-  (`Win32AppMenu.ForwardMenuMessage`). **Tier 2 (UIA fallback** — WPF/Electron/VS Code/Qt, no HMENU):
-  `Interop/UiaAppMenu` finds a `MenuBar` control in the window's UIA tree (background thread; cached per
-  HWND including "has none"; the non-client "System Menu Bar" — a lone "System" item, parented in the
-  UIA TitleBar — is skipped since clicking the app's display name already opens that menu) and renders
-  the same labels, but a click can only Expand/Invoke the app's
-  OWN menu at its own location — UIA popups can't be re-anchored under our bar. No menu found →
-  nothing rendered (Chrome/Edge/Office/UWP command-bar apps). Known limits: owner-drawn Win32 items
-  render blank in a hosted popup (WM_DRAWITEM can't cross processes); elevated apps are UIPI-blocked;
-  very long menus can overlap the trailing status cluster on narrow screens.
-- **Right-click on empty bar space** shows the same dock-wide menu as the dock's empty space
-  (Task Manager / Preferences / About / Quit) — `Bar_RightClick`, reaching the dock via
-  `Application.Current.Windows.OfType<DockWindow>()` (`OpenDockPreferences` is internal for this).
-- **Active-item pill highlight:** every interactive menu-bar item sits in a "pill" `Border` (fixed
-  22px height, CornerRadius 11 = fully round; 8px padding offset by negative margins so the layout
-  matches the padless positions exactly). `MenuHighlightBrush` (swapped in `ApplyTheme`: light
-  `#17000000` almost-transparent black, dark `#26FFFFFF` almost-transparent white) is painted while
-  an item is active: held open for menus we control (logo menu, keyboard layouts —
-  `HighlightWhileOpen` clears on `ContextMenu.Closed`; Tier-1 app menus stay lit through the modal
-  `TrackPopupMenuEx`), a ~350 ms `FlashPill` for actions whose flyout can't be tracked (OS flyouts,
-  the cross-process title-bar menu, UIA menus). The Windows-logo pill is `StartPill` INSIDE the
-  full-height `StartButton` hit area (edge-to-edge click target from the previous change).
-- **Full-screen hide:** like the dock, the menu bar hides itself + its backdrop while a full-screen or
-  borderless-fullscreen app (game/video) owns its monitor (`Interop/Fullscreen` test, re-checked on
-  foreground change, the 1 s clock tick, and `ABN_FULLSCREENAPP`); it reappears when that window goes away.
-  Two things make this robust (both windows): (1) while hidden, the **reserved AppBar strip is released**
-  (`_appBar.Unregister()`, re-reserved on restore) — otherwise the game resizes to the work area to avoid
-  our strip, stops covering the monitor, and the detection flip-flops; (2) `UpdateFullscreenState` ignores
-  the case where **our own process is foreground** (`Fullscreen.IsForegroundOwnProcess`), so clicking the
-  bar/dock over a game doesn't un-hide it.
-- **Why there's no live system-tray icon replication:** a read-only spike on **Windows 11 25H2 (build
-  26200)** found the classic notification-area path **gone** — `SysPager`/`ToolbarWindow32`/
-  `NotifyIconOverflowWindow` don't exist, and the icons live in `explorer.exe` XAML islands that expose
-  **0 invokable buttons** to UI Automation under `Shell_TrayWnd`. So cross-process `ToolbarWindow32` reads
-  (and a UIA fallback) both yield nothing on current Windows. Per user decision, the tray area is instead
-  the reliable, update-proof **Quick Settings + Notifications** flyout shortcuts above. (Probe scripts were
-  one-off; not kept in the repo.) Caveat: the OS anchors those flyouts to the bottom-right tray — they
-  can't be repositioned under the menu-bar icons.
-
 ### Pinned files & folders (macOS right-section stacks) — Grid/List TODO
 - **Files and folders pin to the dock's right section** (after the apps separator; the section
   orders minimized thumbnails FIRST, then the pinned files/folders, then the Recycle Bin).
@@ -933,48 +671,6 @@ src/Dockable/
   StaysOpen=False closes the popup on the tile click's mouse-DOWN, so the mouse-UP checks
   `_fanLastClosed`/400 ms to not instantly reopen. Grid / List / Automatic still open Explorer —
   **user will direct those next**; fan math is Bottom-edge-only (like hover labels).
-
-### Taskbar visibility + restore safety
-- **Three states** (`DockSettings.TaskbarVisibility`, default **Never**), set from Dock Preferences →
-  Taskbar (a combo: Always / Auto / Never) or the tray "Windows taskbar" submenu, applied by
-  `DockWindow.SetTaskbarVisibility` → `Interop/Taskbar.SetVisibility`:
-  - **Always** — `SW_SHOW` the tray windows + `ABM_SETSTATE, ABS_ALWAYSONTOP` (auto-hide off, visible).
-  - **Auto** — `SW_SHOW` + `ABM_SETSTATE, ABS_AUTOHIDE`: the OS slides it away and reveals on edge hover
-    (no custom timer).
-  - **Never** — `ABS_AUTOHIDE` first, then `SW_HIDE` the tray windows (+ a 750 ms delayed re-hide:
-    Explorer applies ABM_SETSTATE asynchronously and re-shows the tray while doing so, stomping the
-    first SW_HIDE). It MUST be auto-hide, not always-on-top: an always-on-top taskbar keeps its
-    work-area reservation even while SW_HIDDEN, so the shell stacked the dock's AppBar strip on a
-    ghost taskbar-height strip and maximized windows floated ~48 px above the dock (measured; looked
-    like "reserving for the magnified dock").
-    **The hide only sticks because `Interop/TaskbarHideWatcher` re-asserts it** — auto-hide leaves an
-    edge sensor, and the dock lives on that same edge, so Explorer re-shows the tray the first time the
-    user reaches for the dock. The watcher **polls** (thread-pool `Timer`, 40 ms; `SW_HIDE` only when
-    something is actually visible).
-    **`Taskbar.cs` must never use `FindWindow` for the tray** — measured on Win11 25H2: an Explorer
-    restart leaves a stale **0x0 `Shell_TrayWnd` behind from the dead instance's pid**, so there are
-    two windows of that class and `FindWindow` (class match in z-order) hands back whichever is
-    higher. Landing on the ghost made the probe report "nothing visible" while the real taskbar sat on
-    screen, and it was never re-hidden. Every operation now sweeps `ForEachTrayWindow` (both classes —
-    secondary bars do NOT reliably carry `Shell_SecondaryTrayWnd` on current builds); `PrimaryTray()`
-    picks the first candidate with a real rect for the appbar-state messages. It used to be an `EVENT_OBJECT_SHOW` WinEvent
-    hook scoped to Explorer; that was **measured not to fire** for these re-shows on Win11 25H2
-    (build 26200) — the tray sat visible seconds after a forced `SW_SHOW`, and was visible again right
-    after launch. Don't "optimize" it back into a hook without re-measuring. `Stop()` waits for an
-    in-flight tick (`Timer.Dispose(WaitHandle)`) so switching to Always/Auto can't be stolen back by a
-    stale re-hide. Consequence: the menu bar's **tray-overflow chevron** (`TrayOverflow`, Win+B) can't
-    work in Never mode — it needs a visible taskbar to focus.
-- **Restore on exit/crash/kill**: `Taskbar.CaptureOriginalState()` records the pre-launch auto-hide
-  state; `Restore()` (clean exit via `DockWindow.OnClosed` + `App.OnExit`, and managed crash via
-  `AppDomain.UnhandledException`) puts it back. **Hard kills** (Task Manager, `taskkill /F`,
-  `Stop-Process`) skip all in-process handlers, so `App.OnStartup` also spawns the out-of-process
-  `Interop/TaskbarWatchdog` (hidden `powershell.exe`, handed the captured state): it waits on the
-  dock's PID and re-asserts that state (SW_SHOW all tray windows + ABM_SETSTATE) when the dock dies
-  for ANY reason, then exits by itself. So even **Never** now survives a force-kill. The watchdog's
-  restore after a clean exit is an idempotent no-op, and it skips the restore entirely if a new dock
-  instance is already running by the time it wakes (quick-restart race, 750 ms grace).
-- Note the **conflict to watch**: the dock also lives at the bottom, so revealing the native taskbar
-  pops it up over/under the dock at the same edge. Accepted per user request (taskbar on demand).
 
 ---
 
@@ -1087,56 +783,8 @@ src/Dockable/
     never-skip-the-final-frame guarantee; CompleteRestoreHold invokes `done` first and checks
     `_playSeq` twice; MonitorHeight is set only by Play/ShowAtSource.
 
-## Status & roadmap
+## Open TODOs
 
-Phases 1–3 + polish implemented:
-- Dock shell, Start tile, shortcuts; fisheye **magnification** (Size + Magnification configurable);
-  per-monitor DPI.
-- **Taskbar mirror**: dock-owned pins (seeded once, multi-strategy window↔pin matching), running dot;
-  **running (unpinned) apps ordered by first-seen/open order** (stable across focus changes).
-- **Custom live drag**: reorder pins; drag any icon out (free-roaming ghost popup); **hold-to-remove**
-  a pinned shortcut (500ms steady → "Remove"); unpinned/minimized snap back.
-- **Minimize/restore** into dock tiles, three effects (`Suck`/`Scale`/`Genie`) via `MinimizeEffect`,
-  with an `EffectSpeed` multiplier and an optional "minimize into the app's dock icon" mode.
-  **Pre-emptively intercepts** the minimize gesture (min-button click, Win+Down, Win+M) via low-level
-  hooks so the warp's frame 0 paints before the OS minimizes (no flash); **Win+M minimizes all
-  sequentially**; external (taskbar/Alt+Tab) restores clear the stale tile; pre-existing minimized
-  windows are adopted on launch; all dock-minimized windows are restored on exit.
-- **Recycle Bin** far-right with a state-aware empty/full icon; **dropping files/folders on it sends
-  them to the Recycle Bin** (`RecycleBin.SendToRecycleBin` → `SHFileOperation` FO_DELETE + FOF_ALLOWUNDO;
-  `OnDrop`/`OnDragOver` route by `IsOverRecycleBin(x)`, else pin). Group-separators between sections.
-- **macOS-style bar styling** with **Light/Dark/Auto theme** (follows OS in Auto); **icon drop-shadows**;
-  **hover labels** (per-icon, in an `IsHitTestVisible=False` Canvas, fading in/out on `IsMouseOver`);
-  **UI sound effects**.
-- **Glass Effect** bar background: Simple / Acrylic / LiquidGlass (separate backdrop window + runtime shader).
-- **Internationalization**: all UI localized (en / pt-BR / es / uk / zh-Hans), live language switch
-  from Dock Preferences → System → Language; first run follows the OS language.
-- **About Dockable** window (separator menu + tray): version, stack, Apple-Dock inspiration, author.
-- **Dock Preferences** window (separator right-click or tray): System (Language + Open-at-login),
-  Appearance tiles, Dock (Size/Magnification, Position, Glass Effect, Minimize effect + Speed,
-  toggles), Taskbar — wired live (Position only implements the Bottom edge).
-- **Docking**: always-visible AppBar that reserves only the resting bar; the window is clipped to the
-  bar when idle so magnification can bleed over. **Native taskbar auto-hide** (self-restoring).
-- **A dock on every display** (`ShowDockOnAllMonitors`, on by default; off = main display only),
-  reacting to monitor hotplug/resolution changes.
-- **Pinned files & folders** (macOS right section): drop to pin, dock-owned order, per-folder
-  Sort by / Display as (Stack composite icons) / View content as (**Fan** with reverse retraction,
-  **Grid** balloon, **List** menu, **Automatic** by count); drag out of fan/grid onto the dock;
-  real **SVG icon rendering** (SharpVectors); Downloads seeded on first run.
-- **Auto-hide the dock** (`AutoHideDock`): slide off the edge when idle, reveal on a 2px edge
-  sliver, AppBar reservation released throughout.
-- **Hover previews**: live DWM thumbnails of an app's windows above its icon, click to raise/restore.
-- **Launch/attention bounce**: one hop on open, 3 hops on a taskbar attention flash (shell hook);
-  icon-only transform so the running dot stays put.
-- **Windows 11-style context menus** app-wide (`Themes/ModernMenu.xaml`), theme-aware; macOS-style
-  Dock menu on empty space (Task Manager, hiding/magnification toggles, position + minimize-effect
-  pickers); menu-bar item pill highlights + edge-to-edge logo click target.
-- **Single instance** (Mutex); tray icon; settings persisted to `%APPDATA%\Dockable\settings.json`.
-
-Likely next work / open TODOs: implement the non-Bottom **Position on screen** edges; exact
-secondary-monitor placement; suppress the running dot for an app whose only window is minimized (vs.
-its tile); UWP/Store pin
-matching; reclaim work-area space when the taskbar is hidden; tune blind animation/size constants per
-user feedback.
-
-Full original plan: `C:\Users\cfiel\.claude\plans\let-s-start-a-new-flickering-puddle.md`.
+Implement the non-Bottom **Position on screen** edges; exact secondary-monitor placement; suppress the
+running dot for an app whose only window is minimized (vs. its tile); UWP/Store pin matching; reclaim
+work-area space when the taskbar is hidden; tune blind animation/size constants per user feedback.
