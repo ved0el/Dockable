@@ -45,10 +45,15 @@ public sealed class GenieAnimator : OverlayAnimatorBase
     private const double NeckWidthFactor = 0.7;
     private const double NeckWidthFloor = 8;
 
-    /// <summary>Past the neck the stream sinks to the icon's CENTRE (it ends in the icon, not at a
-    /// point), still narrowing to <see cref="TailWidthFactor"/> of the neck (~0.42 icon) there, then
-    /// dissolves (FadeStartWarp).</summary>
+    /// <summary>Past the neck the stream sinks into the icon (it ends IN the icon, not at a point),
+    /// still narrowing to <see cref="TailWidthFactor"/> of the neck (~0.42 icon), then dissolves
+    /// (FadeStartWarp).</summary>
     private const double TailWidthFactor = 0.6;
+
+    /// <summary>How deep into the icon (fraction of its height, from its top edge) the stream's far end
+    /// stops. Below 0.5 on purpose: the whole window is packed above that line, so its visual mass sits
+    /// higher than the line itself — 0.35 makes the last frames read as the icon's middle.</summary>
+    private const double EndDepthFactor = 0.35;
 
     /// <summary>The landing line sits this far above the icon's top edge — mirrors DockWindow's
     /// LandingLiftDip, so the band below can end exactly at the icon's centre.</summary>
@@ -169,7 +174,7 @@ public sealed class GenieAnimator : OverlayAnimatorBase
         // the dock, an auto-hidden dock) would put the neck inside it; keep a sane minimum so the curve
         // never degenerates (and nothing divides by ~0).
         _depthD = Math.Max(depth, Math.Max(h * 0.35, 1));
-        _bandH = Math.Max(4, LandingLiftDip + TargetTileWidth / 2); // landing line → icon centre
+        _bandH = Math.Max(4, LandingLiftDip + TargetTileWidth * EndDepthFactor);
 
         double half = Math.Max(NeckWidthFloor, TargetTileWidth * NeckWidthFactor) / 2;
         _neckL = Target.X - half;

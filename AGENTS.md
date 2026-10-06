@@ -560,7 +560,7 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
   LINEAR warp (it overrides `Curve` to identity and eases each phase itself): **bend** (warp 0→0.45,
   smootherstep) fades the curve in with rows in place; **slide** (0.2→1, `2.2t²−1.2t³`: from rest, still moving into the icon) moves every row
   toward the dock by up to `D` and reads its width off the curve where it NOW is — rows past the neck
-  are packed into a band that ends at the icon's CENTRE (landing lift + half the icon; the genie mirrors `LandingLiftDip`) and keep tapering to `TailWidthFactor` 0.6 × the neck (~0.42 icon) — it ends in the icon, not at a point — then the base dissolves it.
+  are packed into a band that ends `EndDepthFactor` 0.35 × the icon below its top (landing lift + that; the genie mirrors `LandingLiftDip`) — the packed mass then reads as the icon's middle and keep tapering to `TailWidthFactor` 0.6 × the neck (~0.42 icon) — it ends in the icon, not at a point — then the base dissolves it.
   Depth is measured from the window's far edge, so a top dock works too; `D` has a floor of 0.35 × the
   window height for windows that already reach past the landing line. The old per-row-progress
   stagger (which needed a `WidthPinchPower` hack to avoid reading as a cone) is gone — don't bring it
