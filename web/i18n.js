@@ -25,7 +25,8 @@
     ["zh-Hans", "中文"],
   ];
 
-  const GH = 'https://github.com/jezzlucena';
+  const GH = 'https://github.com/ved0el';
+  const ORIG = 'https://github.com/jezzlucena/Dockable';
 
   const STRINGS = {
     en: {
@@ -69,9 +70,9 @@
       card3_h: "Recycle Bin", card3_p: "Drop files to delete; a state-aware empty/full icon, far right.",
       card4_h: "Per-monitor DPI", card4_p: "Crisp on any display, with an AppBar that reserves just the bar.",
       card5_h: "Taskbar, your way", card5_p: "Keep it Always, Auto-hide it, or hide it entirely. Restored on exit.",
-      card6_h: "Built native", card6_p: "C# · WPF · .NET 9 · CsWin32. Light, fast, and unpackaged.",
+      card6_h: "Built native", card6_p: "C# · WPF · .NET 10 · CsWin32. Light, fast, and unpackaged.",
       download_h: "Bring your desktop to life.", download_p: "Dockable for Windows 11 — available on Steam.", download_note: "Steam link coming soon.",
-      footer_credit: `Created by <a href="${GH}" target="_blank" rel="noopener">Jezz Lucena</a> · Inspired by Apple's macOS Dock.`,
+      footer_credit: `Created by <a href="${GH}" target="_blank" rel="noopener">Leo</a> · Based on <a href="${ORIG}" target="_blank" rel="noopener">Dockable</a> by Jezz Lucena · Inspired by Apple's macOS Dock.`,
       footer_fine: "Dockable is an independent project and is not affiliated with Apple or Microsoft. macOS and Windows are trademarks of their respective owners.",
       footer_vibe: "Proudly vibe coded.",
     },
@@ -117,9 +118,9 @@
       card3_h: "Lixeira", card3_p: "Solte arquivos para excluir; um ícone que muda entre cheia e vazia, na ponta direita.",
       card4_h: "DPI por monitor", card4_p: "Nítido em qualquer tela, com um AppBar que reserva apenas a barra.",
       card5_h: "Barra de tarefas do seu jeito", card5_p: "Deixe-a Sempre visível, em ocultar automático ou totalmente oculta. Restaurada ao sair.",
-      card6_h: "Nativo de verdade", card6_p: "C# · WPF · .NET 9 · CsWin32. Leve, rápido e sem instalação.",
+      card6_h: "Nativo de verdade", card6_p: "C# · WPF · .NET 10 · CsWin32. Leve, rápido e sem instalação.",
       download_h: "Dê vida à sua área de trabalho.", download_p: "Dockable para Windows 11 — disponível na Steam.", download_note: "Link da Steam em breve.",
-      footer_credit: `Criado por <a href="${GH}" target="_blank" rel="noopener">Jezz Lucena</a> · Inspirado no Dock do macOS da Apple.`,
+      footer_credit: `Criado por <a href="${GH}" target="_blank" rel="noopener">Leo</a> · Baseado no <a href="${ORIG}" target="_blank" rel="noopener">Dockable</a> de Jezz Lucena · Inspirado no Dock do macOS da Apple.`,
       footer_fine: "O Dockable é um projeto independente e não tem afiliação com a Apple ou a Microsoft. macOS e Windows são marcas registradas de seus respectivos proprietários.",
       footer_vibe: "Programado no maior vibe, com orgulho.",
     },
@@ -165,9 +166,9 @@
       card3_h: "Papelera de reciclaje", card3_p: "Suelta archivos para eliminarlos; un icono que cambia entre llena y vacía, a la derecha del todo.",
       card4_h: "DPI por monitor", card4_p: "Nítido en cualquier pantalla, con un AppBar que reserva solo la barra.",
       card5_h: "La barra de tareas a tu manera", card5_p: "Déjala Siempre visible, con ocultar automático u oculta del todo. Se restaura al salir.",
-      card6_h: "Nativo de verdad", card6_p: "C# · WPF · .NET 9 · CsWin32. Ligero, rápido y sin instalación.",
+      card6_h: "Nativo de verdad", card6_p: "C# · WPF · .NET 10 · CsWin32. Ligero, rápido y sin instalación.",
       download_h: "Dale vida a tu escritorio.", download_p: "Dockable para Windows 11 — disponible en Steam.", download_note: "Enlace de Steam próximamente.",
-      footer_credit: `Creado por <a href="${GH}" target="_blank" rel="noopener">Jezz Lucena</a> · Inspirado en el Dock de macOS de Apple.`,
+      footer_credit: `Creado por <a href="${GH}" target="_blank" rel="noopener">Leo</a> · Basado en <a href="${ORIG}" target="_blank" rel="noopener">Dockable</a> de Jezz Lucena · Inspirado en el Dock de macOS de Apple.`,
       footer_fine: "Dockable es un proyecto independiente y no está afiliado a Apple ni a Microsoft. macOS y Windows son marcas comerciales de sus respectivos propietarios.",
       footer_vibe: "Hecho con buena vibra, y con orgullo.",
     },
@@ -213,9 +214,9 @@
       card3_h: "Кошик", card3_p: "Киньте файли, щоб видалити; значок змінює стан між повним і порожнім, скраю праворуч.",
       card4_h: "DPI для кожного монітора", card4_p: "Чітко на будь-якому екрані, з AppBar, що резервує лише панель.",
       card5_h: "Панель завдань на ваш смак", card5_p: "Залиште «Завжди», приховуйте автоматично або сховайте повністю. Відновлюється під час виходу.",
-      card6_h: "Справді нативно", card6_p: "C# · WPF · .NET 9 · CsWin32. Легко, швидко й без встановлення.",
+      card6_h: "Справді нативно", card6_p: "C# · WPF · .NET 10 · CsWin32. Легко, швидко й без встановлення.",
       download_h: "Оживіть свій робочий стіл.", download_p: "Dockable для Windows 11 — доступно в Steam.", download_note: "Посилання на Steam незабаром.",
-      footer_credit: `Створив <a href="${GH}" target="_blank" rel="noopener">Jezz Lucena</a> · Натхненно Dock із macOS від Apple.`,
+      footer_credit: `Створив <a href="${GH}" target="_blank" rel="noopener">Leo</a> · На основі <a href="${ORIG}" target="_blank" rel="noopener">Dockable</a> від Jezz Lucena · Натхненно Dock із macOS від Apple.`,
       footer_fine: "Dockable — незалежний проєкт, не пов'язаний з Apple чи Microsoft. macOS і Windows є торговими марками відповідних власників.",
       footer_vibe: "З гордістю зроблено на вайбі.",
     },
@@ -261,9 +262,9 @@
       card3_h: "回收站", card3_p: "拖入文件即可删除；最右侧有随状态变化的空/满图标。",
       card4_h: "逐显示器 DPI", card4_p: "在任何显示器上都清晰，AppBar 仅预留栏本身的空间。",
       card5_h: "任务栏，随你掌控", card5_p: "可设为始终显示、自动隐藏或完全隐藏。退出时自动恢复。",
-      card6_h: "原生打造", card6_p: "C# · WPF · .NET 9 · CsWin32。轻量、快速、免安装。",
+      card6_h: "原生打造", card6_p: "C# · WPF · .NET 10 · CsWin32。轻量、快速、免安装。",
       download_h: "让你的桌面活起来。", download_p: "Dockable for Windows 11——现已上架 Steam。", download_note: "Steam 链接即将公布。",
-      footer_credit: `由 <a href="${GH}" target="_blank" rel="noopener">Jezz Lucena</a> 创作 · 灵感来自 Apple 的 macOS 程序坞。`,
+      footer_credit: `由 <a href="${GH}" target="_blank" rel="noopener">Leo</a> 维护 · 基于 Jezz Lucena 的 <a href="${ORIG}" target="_blank" rel="noopener">Dockable</a> · 灵感来自 Apple 的 macOS 程序坞。`,
       footer_fine: "Dockable 是独立项目，与 Apple 或 Microsoft 无关。macOS 和 Windows 是其各自所有者的商标。",
       footer_vibe: "凭感觉编程，自豪出品。",
     },

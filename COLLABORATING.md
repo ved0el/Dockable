@@ -31,13 +31,13 @@ Known open TODOs, roughly in order of impact:
 
 ## Prerequisites & setup
 
-- **Windows 11 x64** (the app targets `net9.0-windows10.0.22621.0`; much of the interop is
+- **Windows 11 x64** (the app targets `net10.0-windows10.0.22621.0`; much of the interop is
   Windows-11-specific — taskbar internals, DWM attributes, XAML-island tray, etc.).
-- **.NET 9 SDK**.
+- **.NET 10 SDK**.
 - Any editor works; Visual Studio 2022 or Rider give the best WPF/XAML experience.
 
 ```sh
-git clone https://github.com/jezzlucena/Dockable.git
+git clone https://github.com/ved0el/Dockable.git
 cd Dockable
 dotnet build src/Dockable/Dockable.csproj -c Debug
 dotnet run   --project src/Dockable/Dockable.csproj
@@ -66,7 +66,7 @@ The README's [Project layout](README.md#project-layout) section maps the tree. T
 - `Interop/` is all the Win32 plumbing; `Genie/` is window capture + the minimize animators;
   `Shell/` is icon extraction and folder listings; `Localization/` is the string tables.
 
-`CLAUDE.md` at the repo root is a deep architectural log — decisions, gotchas, and *why*
+`AGENTS.md` at the repo root is a deep architectural log — decisions, gotchas, and *why*
 things are built the way they are. It's dense, but if you're touching magnification,
 minimize/restore, AppBar reservation, or the taskbar mirror, read the relevant section first;
 most of the non-obvious constraints are documented there.
@@ -149,7 +149,7 @@ timing, AppBar reservation, DPI handling) is verified by hand. Before opening a 
 - Don't reformat code you aren't otherwise touching, don't bump package versions as a side
   effect, and don't commit changes to `settings.json` seeds without calling them out.
 - Keep the docs honest: if your change alters behavior described in the README or adds a
-  setting, update the README (and the settings table in `CLAUDE.md`) in the same PR.
+  setting, update the README (and the settings table in `AGENTS.md`) in the same PR.
 - New assets (icons, sounds) must be **embedded resources** — the portable single-file build
   guarantees nothing sits beside the exe.
 

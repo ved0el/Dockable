@@ -13,7 +13,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Dotnet = "C:\Program Files\dotnet\dotnet.exe"
+    [string]$Dotnet = (Get-Command dotnet -ErrorAction Stop).Source
 )
 
 $ErrorActionPreference = "Stop"

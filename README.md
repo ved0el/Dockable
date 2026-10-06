@@ -7,7 +7,8 @@ can **auto-hide** like the real Dock, ships an optional macOS-style **menu bar**
 window minimize/restore with a **genie**, **scale**, or **suck** warp into the dock. Fully
 localized — English, Português (Brasil), Español, Уукраїнська, and 中文.
 
-Created by **[Jezz Lucena](https://github.com/jezzlucena)**.
+Maintained by **[Leo](https://github.com/ved0el)** · © 2026 Leo. Based on the original
+[Dockable](https://github.com/jezzlucena/Dockable) by **[Jezz Lucena](https://github.com/jezzlucena)**.
 
 *Proudly vibe coded with [Claude](https://claude.com/claude-code).*
 
@@ -148,7 +149,7 @@ The window itself (sidebar panels):
   overflow magnification needs.
 
 ## Tech stack
-- **C# 12 + WPF** on **.NET 9** (`net9.0-windows10.0.22621.0`), x64, unpackaged.
+- **C# 12 + WPF** on **.NET 10** (`net10.0-windows10.0.22621.0`), x64, unpackaged.
 - **CsWin32** for source-generated Win32 interop (shell icons, AppBar, window styles, hooks).
 - **CommunityToolkit.Mvvm** for view-models; **H.NotifyIcon.Wpf** for the tray icon;
   **SharpVectors** for rendering SVG file icons.
@@ -165,7 +166,7 @@ The window itself (sidebar panels):
 
 ## Build & run
 
-Requires the **.NET 9 SDK**. From the repo root:
+Requires the **.NET 10 SDK**. From the repo root:
 
 ```sh
 dotnet build src/Dockable/Dockable.csproj -c Debug
@@ -173,7 +174,7 @@ dotnet run   --project src/Dockable/Dockable.csproj
 ```
 
 Or run the built exe directly:
-`src/Dockable/bin/Debug/net9.0-windows10.0.22621.0/Dockable.exe`.
+`src/Dockable/bin/Debug/net10.0-windows10.0.22621.0/Dockable.exe`.
 
 The dock appears centered at the bottom of the primary display. (If a build fails only at the file-copy
 step, a previous `Dockable.exe` is still running — close it and rebuild.)
@@ -181,7 +182,7 @@ step, a previous `Dockable.exe` is still running — close it and rebuild.)
 ### Portable single-file build
 
 Produce one self-contained `Dockable.exe` that runs on any Windows 11 x64 PC with nothing installed
-(the .NET 9 runtime and WPF are bundled inside, and the icons/sounds are embedded — no loose files):
+(the .NET 10 runtime and WPF are bundled inside, and the icons/sounds are embedded — no loose files):
 
 ```powershell
 pwsh -File scripts\build-portable.ps1
@@ -199,7 +200,7 @@ isn't trim-safe.)
 
 ### Distribution (Steam)
 
-Dockable ships on Steam as a **self-contained x64 build** (the .NET 9 runtime and WPF are bundled, so
+Dockable ships on Steam as a **self-contained x64 build** (the .NET 10 runtime and WPF are bundled, so
 players install nothing). Produce it with:
 
 ```powershell

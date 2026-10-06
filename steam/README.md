@@ -1,6 +1,6 @@
 # Shipping Dockable on Steam
 
-Dockable ships as a **self-contained x64 build** — the .NET 9 runtime and WPF are bundled, so players
+Dockable ships as a **self-contained x64 build** — the .NET 10 runtime and WPF are bundled, so players
 need nothing pre-installed. Steam delivers the whole publish folder as a depot.
 
 ## 1. Build the package
@@ -52,6 +52,6 @@ Steam Guard will prompt the first time (interactive). On success the build appea
   testing, and init calls); ask and I'll wire it.
 - **Single instance:** Dockable already uses a named mutex, so Steam's "running" state stays accurate.
 - **Auto-update:** any re-upload to the same depot/branch is delivered as a normal Steam update.
-- The exe carries product metadata (name **Dockable**, version **1.0.0**, author **Jezz Lucena**) from
+- The exe carries product metadata (name **Dockable**, version **1.0.0**, author **Leo**) from
   `Dockable.csproj`; bump `<Version>` there per release and update the `Desc` in `app_build.vdf`.
 - `steam/output/` (SteamPipe logs + chunk cache) is gitignored.

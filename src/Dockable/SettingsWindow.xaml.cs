@@ -12,6 +12,7 @@ using Dockable.Models;
 using Dockable.ViewModels;
 using Windows.Win32;
 using Windows.Win32.Foundation;
+using Windows.Win32.Graphics.Dwm;
 using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace Dockable;
@@ -58,6 +59,7 @@ public partial class SettingsWindow : Window
         _initializing = true; // set before InitializeComponent so initial events no-op
         InitializeComponent();
         Icon = AppIcon.Large;
+        ApplyTheme(SystemTheme.IsDarkEffective(vm.Settings.Theme));
 
         // About page: app icon + version (major.minor.build).
         AboutAppImage.Source = AppIcon.Large;
@@ -86,6 +88,8 @@ public partial class SettingsWindow : Window
         PositionCombo.SelectedIndex = (int)s.Edge;   // DockEdge: Bottom, Left, Right, Top (matches combo order)
         GlassEffectCombo.SelectedIndex = (int)s.GlassEffect; // GlassEffect: Simple, Acrylic, LiquidGlass
         MinimizeCombo.SelectedIndex = (int)s.MinimizeEffect; // MinimizeEffect: Suck, Scale, Genie
+        HoverEffectCombo.SelectedIndex = (int)s.HoverEffect;       // HoverEffect: Magnify, Zoom, Lift
+        HoverAnimationCombo.SelectedIndex = (int)s.HoverAnimation; // HoverAnimation: Smooth, Snappy, Spring
         PerformanceCombo.SelectedIndex = (int)s.PerformanceMode; // PerformanceMode: Auto, Quality, Performance
         EffectSpeedSlider.Value = SpeedToStep(s.EffectSpeed);
         OpenAtLoginSwitch.IsChecked = StartupManager.IsEnabled(StartupEntryName);
@@ -147,6 +151,8 @@ public partial class SettingsWindow : Window
         // Dock & Menu Bar
         new("DockMenuBar", "Label_Size", () => RowOf(SizeSlider), "size icon size small large scale resize"),
         new("DockMenuBar", "Label_Magnification", () => RowOf(MagnificationSlider), "magnification zoom fisheye hover grow magnify enlarge"),
+        new("DockMenuBar", "Row_HoverEffect", () => RowOf(HoverEffectCombo), "hover effect magnify zoom lift seelen macos animation style"),
+        new("DockMenuBar", "Row_HoverAnimation", () => RowOf(HoverAnimationCombo), "hover animation smooth snappy spring bounce elastic curve feel"),
         new("DockMenuBar", "Row_Position", () => RowOf(PositionCombo), "position on screen edge bottom left right side location"),
         new("DockMenuBar", "Row_MinimizeUsing", () => RowOf(MinimizeCombo), "minimize using genie suck scale warp animation effect"),
         new("DockMenuBar", "Label_EffectSpeed", () => RowOf(EffectSpeedSlider), "effect speed slow fast animation duration"),
@@ -169,10 +175,6 @@ public partial class SettingsWindow : Window
         new("LiquidGlass", "LiquidGlass_Aberration", () => AdvancedRowOf(GlassAberrationSlider), "chromatic aberration fringe rainbow advanced"),
         new("LiquidGlass", "LiquidGlass_RimHighlight", () => AdvancedRowOf(GlassRimSlider), "rim highlight glint sheen specular shine advanced"),
     };
-
-    private static readonly Brush ResultNameBrush = UiBrushes.Frozen(UiBrushes.InkHex);
-    private static readonly Brush ResultPanelBrush = UiBrushes.Frozen("#6E6E73");
-    private static readonly Brush ResultHoverBrush = UiBrushes.Frozen("#14000000");
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
@@ -248,7 +250,6 @@ public partial class SettingsWindow : Window
             Text = Loc.T(PanelNameKey(panel)),
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
-            Foreground = ResultNameBrush,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(6, 0, 0, 0),
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -265,7 +266,7 @@ public partial class SettingsWindow : Window
             Child = content,
         };
         AutomationProperties.SetName(row, Loc.T(PanelNameKey(panel)));
-        row.MouseEnter += (_, _) => row.Background = ResultHoverBrush;
+        row.MouseEnter += (_, _) => row.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty, "SetHover");
         row.MouseLeave += (_, _) => row.Background = Brushes.Transparent;
         row.MouseLeftButtonUp += (_, _) => ShowSection(panel);
         return row;
@@ -335,12 +336,11 @@ public partial class SettingsWindow : Window
             {
                 Text = Loc.T(entry.NameKey),
                 FontSize = 13,
-                Foreground = ResultNameBrush,
                 TextTrimming = TextTrimming.CharacterEllipsis,
             },
         };
         AutomationProperties.SetName(row, Loc.T(entry.NameKey));
-        row.MouseEnter += (_, _) => row.Background = ResultHoverBrush;
+        row.MouseEnter += (_, _) => row.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty, "SetHover");
         row.MouseLeave += (_, _) => row.Background = Brushes.Transparent;
         row.MouseLeftButtonUp += (_, _) => OpenSearchResult(entry);
         return row;
@@ -457,18 +457,83 @@ public partial class SettingsWindow : Window
 
     private static void SetNavSelected(System.Windows.Controls.Border row, TextBlock label, bool selected)
     {
-        row.Background = selected ? NavSelectedBrush : Brushes.Transparent;
-        label.Foreground = NavTextBrush;
+        if (selected)
+            row.SetResourceReference(System.Windows.Controls.Border.BackgroundProperty, "SetNavSelected");
+        else
+            row.Background = Brushes.Transparent;
+        label.SetResourceReference(TextBlock.ForegroundProperty, "SetText");
     }
 
-    private static readonly Brush NavTextBrush = UiBrushes.Frozen(UiBrushes.InkHex);
-    private static readonly Brush NavSelectedBrush = UiBrushes.Frozen("#1C000000"); // light gray over the sidebar
+    // --- Light / dark theme ---
+
+    private bool _dark;
+
+    /// <summary>Repaints the window for the effective dock theme: swaps the palette brushes every
+    /// themed element references, and the Win32 title bar's immersive dark mode. Called once at
+    /// construction and by the dock on every theme change (incl. the OS flipping while on Auto).</summary>
+    public void ApplyTheme(bool dark)
+    {
+        _dark = dark;
+        bool mica = ApplyBackdrop();
+        void Set(string key, string hex) => Resources[key] = UiBrushes.Frozen(hex);
+        Set("SetWindowBg", mica ? "#00000000" : dark ? "#1E1E1E" : "#EDEDED");
+        Set("SetText", dark ? "#F5F5F7" : "#1D1D1F");
+        Set("SetBody", dark ? "#D1D1D6" : "#3A3A3C");
+        Set("SetMuted", dark ? "#A1A1A6" : "#6E6E73");
+        Set("SetCaption", dark ? "#8E8E93" : "#8A8A8E");
+        Set("SetCard", dark ? "#2C2C2E" : "#FFFFFF");
+        Set("SetControl", dark ? "#3A3A3C" : "#FFFFFF");
+        Set("SetControlBorder", dark ? "#33FFFFFF" : "#22000000");
+        // On Mica the navigation pane is the material itself (Fluent NavigationView), split by a hairline.
+        Set("SetSidebar", mica ? "#00000000" : dark ? "#252527" : "#E4E4E4");
+        Set("SetSidebarBorder", mica ? (dark ? "#19FFFFFF" : "#0F000000") : dark ? "#3A3A3C" : "#D0D0D0");
+        Set("SetDivider", dark ? "#3A3A3C" : "#E3E3E3");
+        Set("SetTick", dark ? "#636366" : "#B6B6BB");
+        Set("SetSliderTrack", dark ? "#48484A" : "#D6D6DA");
+        Set("SetChevron", dark ? "#AEAEB2" : "#7A7A7E");
+        Set("SetChip", dark ? "#3A3A3C" : "#F2F2F4");
+        Set("SetNavSelected", dark ? "#26FFFFFF" : "#1C000000");
+        Set("SetHover", dark ? "#14FFFFFF" : "#14000000");
+        Resources["SetSwitchOffColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#48484A" : "#E9E9EA");
+        ApplyTitleBarTheme();
+    }
+
+    /// <summary>Windows 11's app-window material: Mica (DWMWA_SYSTEMBACKDROP_TYPE = 38, DWMSBT_MAINWINDOW
+    /// = 2) behind a transparent WPF surface and a frame extended over the whole client area. Off (solid
+    /// palette) before 22H2, before the HWND exists, or while Windows' "Transparency effects" is off —
+    /// Fluent's fallback. Returns whether Mica is showing.</summary>
+    private unsafe bool ApplyBackdrop()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || Environment.OSVersion.Version.Build < 22621)
+            return false;
+        bool mica = SystemTheme.TransparencyEnabled();
+        if (HwndSource.FromHwnd(hwnd)?.CompositionTarget is { } target)
+            target.BackgroundColor = mica ? Colors.Transparent : SystemColors.WindowColor;
+        var margins = new Windows.Win32.UI.Controls.MARGINS { cxLeftWidth = mica ? -1 : 0, cxRightWidth = mica ? -1 : 0,
+            cyTopHeight = mica ? -1 : 0, cyBottomHeight = mica ? -1 : 0 };
+        PInvoke.DwmExtendFrameIntoClientArea((HWND)hwnd, &margins);
+        int type = mica ? 2 : 1; // DWMSBT_MAINWINDOW : DWMSBT_NONE
+        PInvoke.DwmSetWindowAttribute((HWND)hwnd, (DWMWINDOWATTRIBUTE)38, &type, sizeof(int));
+        return mica;
+    }
+
+    /// <summary>DWMWA_USE_IMMERSIVE_DARK_MODE (20): the caption follows the theme on Windows 11.</summary>
+    private unsafe void ApplyTitleBarTheme()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+            return; // not created yet — OnSourceInitialized applies it
+        int on = _dark ? 1 : 0;
+        PInvoke.DwmSetWindowAttribute((HWND)hwnd, (DWMWINDOWATTRIBUTE)20, &on, sizeof(int));
+    }
 
     // ResizeMode=CanResize adds a maximize box; remove it so the window can't jump to a corner — its
     // size is already capped to its content and the viewport.
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
+        ApplyTheme(_dark); // now that the HWND exists: title bar + Mica
         var hwnd = (HWND)new WindowInteropHelper(this).Handle;
         var style = (WINDOW_STYLE)(uint)PInvoke.GetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_STYLE);
         PInvoke.SetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_STYLE, (nint)(uint)(style & ~WINDOW_STYLE.WS_MAXIMIZEBOX));
@@ -735,6 +800,24 @@ public partial class SettingsWindow : Window
             return;
         _vm.Settings.MinimizeEffect = (MinimizeEffect)MinimizeCombo.SelectedIndex; // 0 Suck, 1 Scale, 2 Genie
         _vm.Save();
+    }
+
+    // --- Hover effect / animation ---
+
+    private void HoverEffectCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing)
+            return;
+        _vm.Settings.HoverEffect = (HoverEffect)HoverEffectCombo.SelectedIndex; // 0 Magnify, 1 Zoom, 2 Lift
+        ApplyAndSave();
+    }
+
+    private void HoverAnimationCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing)
+            return;
+        _vm.Settings.HoverAnimation = (HoverAnimation)HoverAnimationCombo.SelectedIndex; // 0 Smooth, 1 Snappy, 2 Spring
+        ApplyAndSave();
     }
 
     // --- Performance mode ---

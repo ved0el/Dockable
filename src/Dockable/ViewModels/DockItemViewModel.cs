@@ -137,6 +137,11 @@ public sealed partial class DockItemViewModel : ObservableObject
     /// <summary>Smoothed magnification scale (1 = resting). Plain field; not bound.</summary>
     public double CurrentScale { get; set; } = 1.0;
 
+
+    /// <summary>Hover lift in DIPs for the Lift hover effect (0 at rest), added on top of the bounce.</summary>
+    public double HoverLift;
+
+
     /// <summary>Appearance scale (0..1): eases 0→1 as an item is added and 1→0 as it's removed, so the
     /// dock's width grows/shrinks smoothly instead of jumping. Plain field; driven by the layout engine.</summary>
     public double AppearScale { get; set; } = 1.0;
@@ -154,6 +159,15 @@ public sealed partial class DockItemViewModel : ObservableObject
 
     /// <summary>How many hops the current bounce plays (1 = launch, 3 = attention request).</summary>
     private int _bounceHops = 1;
+
+    /// <summary>True while a launch bounce keeps hopping until the app shows its first window.</summary>
+    private bool _launchBouncing;
+
+    /// <summary>One hop, takeoff to landing. A gravity arc, so it reads as weight rather than a wobble.</summary>
+    private const double HopMs = 600;
+
+    /// <summary>A launch that never produces a window we can match stops bouncing after this many hops.</summary>
+    private const int MaxLaunchHops = 12;
 
     /// <summary>Current bounce lift in DIPs (0 at rest); the engine maps it into <see cref="BounceX"/>/
     /// <see cref="BounceY"/> per edge so ONLY the icon lifts (the running dot stays put).</summary>
@@ -181,8 +195,32 @@ public sealed partial class DockItemViewModel : ObservableObject
     /// request (the taskbar-flash equivalent).</summary>
     public void StartBounce(int hops = 1)
     {
+        _launchBouncing = false;
         _bounceHops = Math.Max(1, hops);
         _bounceStartTicks = DateTime.UtcNow.Ticks;
+    }
+
+    /// <summary>macOS launch feedback: keep hopping from the click until the app is ready (its first
+    /// window shows up — see <see cref="EndLaunchBounce"/>), capped at <see cref="MaxLaunchHops"/>.</summary>
+    public void StartLaunchBounce()
+    {
+        if (!IsBouncing)
+            _bounceStartTicks = DateTime.UtcNow.Ticks;
+        _launchBouncing = true;
+        _bounceHops = MaxLaunchHops;
+    }
+
+    /// <summary>True while a launch bounce is waiting for the app's first window.</summary>
+    public bool IsLaunchBouncing => _launchBouncing && IsBouncing;
+
+    /// <summary>The app is ready: land at the end of the hop in flight instead of snapping mid-air.</summary>
+    public void EndLaunchBounce()
+    {
+        if (!_launchBouncing)
+            return;
+        _launchBouncing = false;
+        double elapsed = (DateTime.UtcNow.Ticks - _bounceStartTicks) / (double)TimeSpan.TicksPerMillisecond;
+        _bounceHops = Math.Min(_bounceHops, (int)(elapsed / HopMs) + 1);
     }
 
     /// <summary>
@@ -195,17 +233,19 @@ public sealed partial class DockItemViewModel : ObservableObject
         if (_bounceStartTicks == 0)
             return false;
 
-        const double hopMs = 560; // one up-and-down hop (2x slower than the original 280ms)
         double elapsed = (DateTime.UtcNow.Ticks - _bounceStartTicks) / (double)TimeSpan.TicksPerMillisecond;
-        if (elapsed >= hopMs * _bounceHops)
+        if (elapsed >= HopMs * _bounceHops)
         {
             _bounceStartTicks = 0;
+            _launchBouncing = false;
             BounceOffset = 0;
             return false;
         }
 
-        double phase = (elapsed % hopMs) / hopMs;       // 0..1 within a hop
-        BounceOffset = amplitude * Math.Sin(Math.PI * phase); // smooth arch up then down
+        // Ballistic arc 4p(1-p): fast takeoff decelerating to the apex, then accelerating back down
+        // and landing at full speed — the macOS Dock hop (a sine arch floats at both ends instead).
+        double phase = (elapsed % HopMs) / HopMs;
+        BounceOffset = amplitude * 4 * phase * (1 - phase);
         return true;
     }
 

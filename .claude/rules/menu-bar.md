@@ -24,8 +24,7 @@ paths:
   magnification). Its own `AppBarManager(_hwnd, WM_USER+2)` reserves the top strip (`MenuBarHeight`, 28 DIP)
   via `ReserveEdge(DockEdge.Top, …)`; `WndProc` handles `ABN_POSCHANGED` (re-reserve) + `WM_SETTINGCHANGE`
   (re-theme when System). **Always acrylic**: reuses `AcrylicBackdrop` (corner radius 0), always shown
-  (independent of the dock's Glass Effect setting). **No border.** `ApplyTheme()` paints the bar with the
-  dock's own bar colours at **50% transparency** (light `#80FFFFFF`, dark `#80242424`) over the blur, and
+  (independent of the dock's Glass Effect setting). **No border.** `ApplyTheme()` sets the Fluent acrylic layers (`AcrylicBackdrop.SetEffect(dark, transparency)`; opaque fallback while "Transparency effects" is off) and leaves the WPF bar brush transparent, and
   swaps `MenuTextBrush` to contrast per the Appearance theme (dark `#F2F2F2` / light `#1D1D1F`).
 - Content: **leading** = the app's launcher glyph (`StartGlyphGeometry` in App.xaml — an ORIGINAL
   four-rounded-unequal-tiles mark, deliberately NOT the trademarked Windows flag, which third parties

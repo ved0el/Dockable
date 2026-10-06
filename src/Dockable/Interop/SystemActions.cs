@@ -24,7 +24,7 @@ public static class SystemActions
     public static void LogOut() => RunShutdown("/l");
 
     /// <summary>
-    /// The signed-in user's friendly display name (e.g. "Jezz Lucena") via GetUserNameEx(NameDisplay),
+    /// The signed-in user's friendly display name (e.g. "Jane Doe") via GetUserNameEx(NameDisplay),
     /// which works for Microsoft/AzureAD/domain accounts. Falls back to the login name (e.g. "cfiel")
     /// for local accounts that have no display name.
     /// </summary>

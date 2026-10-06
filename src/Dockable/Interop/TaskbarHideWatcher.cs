@@ -25,14 +25,30 @@ public sealed class TaskbarHideWatcher : IDisposable
     private const int PollMs = 40;
 
     private Timer? _timer;
+    private bool _releasedForHang;
 
     /// <summary>Starts re-hiding the taskbar whenever Explorer shows it. No-op if already running.</summary>
-    public void Start()
+    /// <param name="dockHwnd">The dock's window. While Windows reports it hung (no message pumping for
+    /// ~5 s) the watcher stops re-hiding and shows the taskbar instead — this timer runs off the UI
+    /// thread, so without the check a frozen dock would keep the taskbar hidden with nothing usable in
+    /// its place. Re-hiding resumes by itself once the dock responds again.</param>
+    public void Start(IntPtr dockHwnd)
     {
         if (_timer is not null)
             return;
+        _releasedForHang = false;
         _timer = new Timer(_ =>
         {
+            if (dockHwnd != IntPtr.Zero && Windows.Win32.PInvoke.IsHungAppWindow(new(dockHwnd)))
+            {
+                if (!_releasedForHang)
+                {
+                    _releasedForHang = true;
+                    Taskbar.ShowTrayWindows();
+                }
+                return;
+            }
+            _releasedForHang = false;
             if (Taskbar.AnyTrayWindowVisible())
                 Taskbar.Hide();
         }, null, dueTime: 0, period: PollMs);

@@ -11,13 +11,33 @@
         Height="685"
         MinWidth="620"
         MinHeight="440"
-        Background="#EDEDED"
+        Background="{DynamicResource SetWindowBg}"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal"
         FontFamily="Segoe UI"
-        Foreground="#1D1D1F">
+        Foreground="{DynamicResource SetText}">
 
     <Window.Resources>
+        <!-- Theme palette (light values here; SettingsWindow.ApplyTheme swaps in the dark set). -->
+        <SolidColorBrush x:Key="SetWindowBg" Color="#EDEDED" />
+        <SolidColorBrush x:Key="SetText" Color="#1D1D1F" />
+        <SolidColorBrush x:Key="SetBody" Color="#3A3A3C" />
+        <SolidColorBrush x:Key="SetMuted" Color="#6E6E73" />
+        <SolidColorBrush x:Key="SetCaption" Color="#8A8A8E" />
+        <SolidColorBrush x:Key="SetCard" Color="White" />
+        <SolidColorBrush x:Key="SetControl" Color="White" />
+        <SolidColorBrush x:Key="SetControlBorder" Color="#22000000" />
+        <SolidColorBrush x:Key="SetSidebar" Color="#E4E4E4" />
+        <SolidColorBrush x:Key="SetSidebarBorder" Color="#D0D0D0" />
+        <SolidColorBrush x:Key="SetDivider" Color="#E3E3E3" />
+        <SolidColorBrush x:Key="SetTick" Color="#B6B6BB" />
+        <SolidColorBrush x:Key="SetSliderTrack" Color="#D6D6DA" />
+        <SolidColorBrush x:Key="SetChevron" Color="#7A7A7E" />
+        <SolidColorBrush x:Key="SetChip" Color="#F2F2F4" />
+        <SolidColorBrush x:Key="SetNavSelected" Color="#1C000000" />
+        <SolidColorBrush x:Key="SetHover" Color="#14000000" />
+        <Color x:Key="SetSwitchOffColor">#E9E9EA</Color>
+
         <!-- macOS-style toggle switch -->
         <Style x:Key="MacSwitch" TargetType="ToggleButton">
             <Setter Property="Width" Value="38" />
@@ -30,7 +50,7 @@
                         <Border x:Name="Track" CornerRadius="11">
                             <Border.Background>
                                 <!-- Explicit (mutable) brush so its Color can be animated. -->
-                                <SolidColorBrush x:Name="TrackBrush" Color="#E9E9EA" />
+                                <SolidColorBrush x:Name="TrackBrush" Color="{DynamicResource SetSwitchOffColor}" />
                             </Border.Background>
                             <!-- The knob rests at the left and slides right (via TranslateTransform) when on. -->
                             <Ellipse x:Name="Knob" Width="18" Height="18" Fill="White"
@@ -69,8 +89,9 @@
                                                     <CubicEase EasingMode="EaseOut" />
                                                 </DoubleAnimation.EasingFunction>
                                             </DoubleAnimation>
+                                            <!-- No To: animates back to the base (theme) colour. -->
                                             <ColorAnimation Storyboard.TargetName="TrackBrush" Storyboard.TargetProperty="Color"
-                                                            To="#E9E9EA" Duration="0:0:0.18" />
+                                                            Duration="0:0:0.18" />
                                         </Storyboard>
                                     </BeginStoryboard>
                                 </Trigger.ExitActions>
@@ -103,12 +124,12 @@
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
                             <!-- Full width so the first/last ticks sit at the very ends of the slider. -->
-                            <TickBar x:Name="TopTick" Grid.Row="0" Placement="Top" Height="4" Fill="#B6B6BB"
+                            <TickBar x:Name="TopTick" Grid.Row="0" Placement="Top" Height="4" Fill="{DynamicResource SetTick}"
                                      SnapsToDevicePixels="True" Visibility="Collapsed" Margin="0,0,0,3"
                                      Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
                                      TickFrequency="{TemplateBinding TickFrequency}" />
                             <Grid Grid.Row="1" VerticalAlignment="Center">
-                                <Border Height="4" CornerRadius="2" Background="#D6D6DA" VerticalAlignment="Center" />
+                                <Border Height="4" CornerRadius="2" Background="{DynamicResource SetSliderTrack}" VerticalAlignment="Center" />
                                 <Track x:Name="PART_Track">
                                     <!-- Filled (left) side of the track: the same active blue as the
                                          switches. The transparent right side keeps track clicks and
@@ -149,7 +170,7 @@
                                     </Track.Thumb>
                                 </Track>
                             </Grid>
-                            <TickBar x:Name="BottomTick" Grid.Row="2" Placement="Bottom" Height="4" Fill="#B6B6BB"
+                            <TickBar x:Name="BottomTick" Grid.Row="2" Placement="Bottom" Height="4" Fill="{DynamicResource SetTick}"
                                      SnapsToDevicePixels="True" Visibility="Collapsed" Margin="0,3,0,0"
                                      Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
                                      TickFrequency="{TemplateBinding TickFrequency}" />
@@ -197,7 +218,7 @@
             <Setter Property="Height" Value="26" />
             <Setter Property="MinWidth" Value="130" />
             <Setter Property="FontSize" Value="13" />
-            <Setter Property="Foreground" Value="#1D1D1F" />
+            <Setter Property="Foreground" Value="{DynamicResource SetText}" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="ItemContainerStyle" Value="{StaticResource MacPopupItem}" />
             <Setter Property="Template">
@@ -208,13 +229,13 @@
                                           IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
                                 <ToggleButton.Template>
                                     <ControlTemplate TargetType="ToggleButton">
-                                        <Border Background="White" CornerRadius="6"
-                                                BorderBrush="#22000000" BorderThickness="1">
+                                        <Border Background="{DynamicResource SetControl}" CornerRadius="6"
+                                                BorderBrush="{DynamicResource SetControlBorder}" BorderThickness="1">
                                             <Border.Effect>
                                                 <DropShadowEffect BlurRadius="2" ShadowDepth="0.5" Opacity="0.12" Color="#000000" />
                                             </Border.Effect>
                                             <Path HorizontalAlignment="Right" VerticalAlignment="Center"
-                                                  Margin="0,0,9,0" Stroke="#7A7A7E" StrokeThickness="1.3"
+                                                  Margin="0,0,9,0" Stroke="{DynamicResource SetChevron}" StrokeThickness="1.3"
                                                   Data="M 0,3.5 L 3.5,0.5 L 7,3.5  M 0,7.5 L 3.5,10.5 L 7,7.5" />
                                         </Border>
                                     </ControlTemplate>
@@ -227,8 +248,8 @@
                             <Popup IsOpen="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}}"
                                    Placement="Bottom" AllowsTransparency="True" PopupAnimation="Fade"
                                    Focusable="False">
-                                <Border Background="White" CornerRadius="6" Margin="0,4,0,4"
-                                        BorderBrush="#22000000" BorderThickness="1"
+                                <Border Background="{DynamicResource SetCard}" CornerRadius="6" Margin="0,4,0,4"
+                                        BorderBrush="{DynamicResource SetControlBorder}" BorderThickness="1"
                                         MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
                                     <Border.Effect>
                                         <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.22" Color="#000000" />
@@ -251,24 +272,24 @@
         <!-- Shared text styles -->
         <Style x:Key="RowLabel" TargetType="TextBlock">
             <Setter Property="FontSize" Value="13" />
-            <Setter Property="Foreground" Value="#1D1D1F" />
+            <Setter Property="Foreground" Value="{DynamicResource SetText}" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
         <Style x:Key="Caption" TargetType="TextBlock">
             <Setter Property="FontSize" Value="11" />
-            <Setter Property="Foreground" Value="#8A8A8E" />
+            <Setter Property="Foreground" Value="{DynamicResource SetCaption}" />
         </Style>
         <Style x:Key="GroupLabel" TargetType="TextBlock">
             <Setter Property="FontSize" Value="13" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Foreground" Value="#1D1D1F" />
+            <Setter Property="Foreground" Value="{DynamicResource SetText}" />
         </Style>
 
         <!-- Section header at the top of a content page -->
         <Style x:Key="PageHeader" TargetType="TextBlock">
             <Setter Property="FontSize" Value="15" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Foreground" Value="#1D1D1F" />
+            <Setter Property="Foreground" Value="{DynamicResource SetText}" />
             <Setter Property="Margin" Value="2,0,0,8" />
         </Style>
 
@@ -290,7 +311,7 @@
 
         <!-- "Built with" clickable technology chip (About page): a light pill with a colored badge + name -->
         <Style x:Key="TechChip" TargetType="Border">
-            <Setter Property="Background" Value="#F2F2F4" />
+            <Setter Property="Background" Value="{DynamicResource SetChip}" />
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="8,5" />
             <Setter Property="Margin" Value="0,0,8,8" />
@@ -301,7 +322,7 @@
         <Style x:Key="LinkGlyph" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
             <Setter Property="FontSize" Value="9" />
-            <Setter Property="Foreground" Value="#6E6E73" />
+            <Setter Property="Foreground" Value="{DynamicResource SetMuted}" />
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Margin" Value="5,1,0,0" />
             <Setter Property="Text" Value="&#xE8A7;" />
@@ -322,7 +343,7 @@
             <Setter Property="Margin" Value="7,0,0,0" />
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="FontSize" Value="12" />
-            <Setter Property="Foreground" Value="#1D1D1F" />
+            <Setter Property="Foreground" Value="{DynamicResource SetText}" />
         </Style>
         <!-- Feature bullet in the Highlights card -->
         <Style x:Key="BulletIcon" TargetType="TextBlock">
@@ -334,7 +355,7 @@
         </Style>
         <Style x:Key="BulletText" TargetType="TextBlock">
             <Setter Property="FontSize" Value="13" />
-            <Setter Property="Foreground" Value="#1D1D1F" />
+            <Setter Property="Foreground" Value="{DynamicResource SetText}" />
             <Setter Property="TextWrapping" Value="Wrap" />
             <Setter Property="LineHeight" Value="18" />
         </Style>
@@ -347,10 +368,10 @@
         </Grid.ColumnDefinitions>
 
         <!-- Sidebar -->
-        <Border Grid.Column="0" Background="#E4E4E4" BorderBrush="#D0D0D0" BorderThickness="0,0,1,0">
+        <Border Grid.Column="0" Background="{DynamicResource SetSidebar}" BorderBrush="{DynamicResource SetSidebarBorder}" BorderThickness="0,0,1,0">
             <StackPanel Margin="10,16,10,10">
                 <!-- Search: filters the settings index (names + tags); results replace the nav list. -->
-                <Border Background="White" CornerRadius="7" BorderBrush="#D0D0D0" BorderThickness="1"
+                <Border Background="{DynamicResource SetControl}" CornerRadius="7" BorderBrush="{DynamicResource SetSidebarBorder}" BorderThickness="1"
                         Padding="8,0" Margin="0,0,0,10">
                     <Grid Height="28">
                         <Grid.ColumnDefinitions>
@@ -358,14 +379,14 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                   FontSize="12" Foreground="#8E8E93" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                   FontSize="12" Foreground="{DynamicResource SetCaption}" VerticalAlignment="Center" Margin="0,0,6,0" />
                         <Grid Grid.Column="1">
                             <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent"
                                      AutomationProperties.Name="{loc:Loc Search_Placeholder}"
-                                     VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F"
-                                     TextChanged="SearchBox_TextChanged" />
+                                     VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource SetText}"
+                                     CaretBrush="{DynamicResource SetText}" TextChanged="SearchBox_TextChanged" />
                             <TextBlock x:Name="SearchHint" Text="{loc:Loc Search_Placeholder}" FontSize="13"
-                                       Foreground="#9A9AA0" VerticalAlignment="Center" IsHitTestVisible="False" />
+                                       Foreground="{DynamicResource SetCaption}" VerticalAlignment="Center" IsHitTestVisible="False" />
                         </Grid>
                     </Grid>
                 </Border>
@@ -383,7 +404,7 @@
                             <TextBlock Text="&#xE713;" Style="{StaticResource NavIcon}" />
                         </Border>
                         <TextBlock x:Name="NavGeneralLabel" Text="{loc:Loc Nav_General}" Margin="10,0,0,0"
-                                   VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
+                                   VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource SetText}" />
                     </StackPanel>
                 </a11y:InvokableCell>
 
@@ -396,7 +417,7 @@
                             <TextBlock Text="&#xE8A9;" Style="{StaticResource NavIcon}" />
                         </Border>
                         <TextBlock x:Name="NavDockMenuBarLabel" Text="{loc:Loc Nav_DockMenuBar}" Margin="10,0,0,0"
-                                   VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
+                                   VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource SetText}" />
                     </StackPanel>
                 </a11y:InvokableCell>
 
@@ -419,7 +440,7 @@
                             <TextBlock Text="&#xE790;" Style="{StaticResource NavIcon}" />
                         </Border>
                         <TextBlock x:Name="NavLiquidGlassLabel" Text="{loc:Loc Nav_LiquidGlass}" Margin="10,0,0,0"
-                                   VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
+                                   VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource SetText}" />
                     </StackPanel>
                 </a11y:InvokableCell>
 
@@ -432,7 +453,7 @@
                             <TextBlock Text="&#xE946;" Style="{StaticResource NavIcon}" />
                         </Border>
                         <TextBlock x:Name="NavAboutLabel" Text="{loc:Loc Nav_About}" Margin="10,0,0,0"
-                                   VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
+                                   VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource SetText}" />
                     </StackPanel>
                 </a11y:InvokableCell>
                 </StackPanel>
@@ -449,7 +470,7 @@
                 <StackPanel Margin="20">
                     <!-- System section (language + login) -->
                     <TextBlock Text="{loc:Loc Section_System}" Style="{StaticResource PageHeader}" />
-                    <Border Background="White" CornerRadius="10" Margin="0,0,0,18">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10" Margin="0,0,0,18">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
@@ -462,7 +483,7 @@
                                           VerticalAlignment="Center" SelectionChanged="LanguageCombo_SelectionChanged" />
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" />
 
                             <Grid Height="44">
                                 <TextBlock Text="{loc:Loc Row_Performance}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
@@ -475,7 +496,7 @@
                                 </ComboBox>
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="0,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="0,0,0,0" />
                             <Grid Height="44">
                                 <TextBlock Text="{loc:Loc Row_OpenAtLogin}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
                                 <ToggleButton x:Name="OpenAtLoginSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
@@ -496,7 +517,7 @@
 
                     <!-- Appearance section (mimics macOS Settings > Appearance) -->
                     <TextBlock Text="{loc:Loc Section_Appearance}" Style="{StaticResource PageHeader}" />
-                    <Border Background="White" CornerRadius="10" Margin="0,0,0,18">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10" Margin="0,0,0,18">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
@@ -527,7 +548,7 @@
                                 </Border>
                                 <RadioButton x:Name="LightRadio" GroupName="Appearance" Content="{loc:Loc Theme_Light}" Tag="Light"
                                              HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
-                                             Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
+                                             Foreground="{DynamicResource SetText}" Checked="AppearanceRadio_Checked" />
                             </StackPanel>
 
                             <!-- Dark -->
@@ -556,7 +577,7 @@
                                 </Border>
                                 <RadioButton x:Name="DarkRadio" GroupName="Appearance" Content="{loc:Loc Theme_Dark}" Tag="Dark"
                                              HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
-                                             Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
+                                             Foreground="{DynamicResource SetText}" Checked="AppearanceRadio_Checked" />
                             </StackPanel>
 
                             <!-- Auto (half light / half dark) -->
@@ -614,14 +635,14 @@
                                 </Border>
                                 <RadioButton x:Name="AutoRadio" GroupName="Appearance" Content="{loc:Loc Theme_Auto}" Tag="Auto"
                                              HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
-                                             Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
+                                             Foreground="{DynamicResource SetText}" Checked="AppearanceRadio_Checked" />
                             </StackPanel>
                         </StackPanel>
                     </Border>
 
                     <!-- Taskbar section -->
                     <TextBlock Text="{loc:Loc Section_Taskbar}" Style="{StaticResource PageHeader}" />
-                    <Border Background="White" CornerRadius="10">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
@@ -647,7 +668,7 @@
                     <TextBlock Text="{loc:Loc Section_Dock}" Style="{StaticResource PageHeader}" />
 
                     <!-- White grouped card -->
-                    <Border Background="White" CornerRadius="10">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
@@ -689,7 +710,34 @@
                                 </StackPanel>
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
+
+                            <!-- Hover effect + its motion curve (macOS / Seelen UI styles). -->
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Row_HoverEffect}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ComboBox x:Name="HoverEffectCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                          AutomationProperties.Name="{loc:Loc Row_HoverEffect}"
+                                          VerticalAlignment="Center" SelectionChanged="HoverEffectCombo_SelectionChanged">
+                                    <ComboBoxItem Content="{loc:Loc Hover_Magnify}" />
+                                    <ComboBoxItem Content="{loc:Loc Hover_Zoom}" />
+                                    <ComboBoxItem Content="{loc:Loc Hover_Lift}" />
+                                </ComboBox>
+                            </Grid>
+
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
+
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Row_HoverAnimation}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ComboBox x:Name="HoverAnimationCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                          AutomationProperties.Name="{loc:Loc Row_HoverAnimation}"
+                                          VerticalAlignment="Center" SelectionChanged="HoverAnimationCombo_SelectionChanged">
+                                    <ComboBoxItem Content="{loc:Loc HoverAnim_Smooth}" />
+                                    <ComboBoxItem Content="{loc:Loc HoverAnim_Snappy}" />
+                                    <ComboBoxItem Content="{loc:Loc HoverAnim_Spring}" />
+                                </ComboBox>
+                            </Grid>
+
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <!-- Group 2: pop-up rows -->
                             <Grid Height="44" Margin="16,0">
@@ -704,7 +752,7 @@
                                 </ComboBox>
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <Grid Height="44" Margin="16,0">
                                 <TextBlock Text="{loc:Loc Row_MinimizeUsing}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
@@ -717,7 +765,7 @@
                                 </ComboBox>
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <!-- Effect speed: the slider matches the Magnification slider's width (same *,24,* grid). -->
                             <Grid Margin="16,8,16,10">
@@ -742,7 +790,7 @@
                                 </StackPanel>
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <!-- Group 3: toggle rows -->
                             <Grid Height="44" Margin="16,0">
@@ -752,7 +800,7 @@
                                               VerticalAlignment="Center" Click="IndicatorsSwitch_Click" />
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <Grid Height="44" Margin="16,0">
                                 <TextBlock Text="{loc:Loc Toggle_AnimateOpening}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
@@ -761,7 +809,7 @@
                                               VerticalAlignment="Center" Click="AnimateOpeningSwitch_Click" />
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <Grid Height="44" Margin="16,0">
                                 <TextBlock Text="{loc:Loc Toggle_MinimizeIntoIcon}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
@@ -770,7 +818,7 @@
                                               VerticalAlignment="Center" Click="MinimizeIntoIconSwitch_Click" />
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <!-- On: a dock on every display. Off: the main display only. -->
                             <Grid Height="44" Margin="16,0">
@@ -780,7 +828,7 @@
                                               VerticalAlignment="Center" Click="ShowOnAllDisplaysSwitch_Click" />
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <Grid Height="44" Margin="16,0">
                                 <TextBlock Text="{loc:Loc Toggle_AutoHideDock}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
@@ -789,7 +837,7 @@
                                               VerticalAlignment="Center" Click="AutoHideDockSwitch_Click" />
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <Grid Height="44" Margin="16,0">
                                 <TextBlock Text="{loc:Loc Toggle_HideOnFullscreen}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
@@ -798,7 +846,7 @@
                                               VerticalAlignment="Center" Click="HideOnFullscreenSwitch_Click" />
                             </Grid>
 
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <!-- Shows/hides the built-in Dock Preferences tile; synced with the
                                  tile's "Keep in Dock" context-menu toggle. -->
@@ -814,7 +862,7 @@
 
                     <!-- Menu Bar section -->
                     <TextBlock Text="{loc:Loc Section_MenuBar}" Style="{StaticResource PageHeader}" Margin="2,18,0,8" />
-                    <Border Background="White" CornerRadius="10">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
@@ -835,7 +883,7 @@
                 <StackPanel Margin="20">
                     <TextBlock Text="{loc:Loc Section_LiquidGlass}" Style="{StaticResource PageHeader}" />
 
-                    <Border Background="White" CornerRadius="10">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
@@ -854,7 +902,7 @@
 
                             <!-- Separates the combo from the Advanced link / sliders; hidden (with them)
                                  when the effect isn't Liquid Glass so no bare rule trails the card. -->
-                            <Border x:Name="GlassAdvancedDivider" Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                            <Border x:Name="GlassAdvancedDivider" Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                             <!-- Advanced: one-way reveal of the tuning sliders — shown only while the
                                  effect is Liquid Glass AND the sliders are still collapsed. -->
@@ -891,7 +939,7 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                                 <!-- Distortion -->
                                 <Grid Margin="16,10,16,6">
@@ -913,7 +961,7 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                                 <!-- Tint opacity -->
                                 <Grid Margin="16,10,16,6">
@@ -935,7 +983,7 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                                 <!-- Saturation -->
                                 <Grid Margin="16,10,16,6">
@@ -957,7 +1005,7 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                                 <!-- Chromatic aberration -->
                                 <Grid Margin="16,10,16,6">
@@ -979,7 +1027,7 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                                 <!-- Rim highlight (sheen) -->
                                 <Grid Margin="16,10,16,6">
@@ -1001,7 +1049,7 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="{DynamicResource SetDivider}" Margin="16,0,0,0" />
 
                                 <!-- Reset to defaults -->
                                 <a11y:InvokableRow x:Name="GlassResetLink" Orientation="Horizontal" HorizontalAlignment="Right"
@@ -1026,31 +1074,31 @@
                     <Image x:Name="AboutAppImage" Width="88" Height="88" HorizontalAlignment="Center" Margin="0,4,0,0"
                            AutomationProperties.Name="Dockable" />
                     <TextBlock Text="Dockable" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,0" />
-                    <TextBlock Text="{loc:Loc About_Tagline}" FontSize="13" Foreground="#3A3A3C"
+                    <TextBlock Text="{loc:Loc About_Tagline}" FontSize="13" Foreground="{DynamicResource SetBody}"
                                HorizontalAlignment="Center" TextAlignment="Center" Margin="0,3,0,0" />
-                    <TextBlock x:Name="AboutVersionText" FontSize="12" Foreground="#6E6E73"
+                    <TextBlock x:Name="AboutVersionText" FontSize="12" Foreground="{DynamicResource SetMuted}"
                                HorizontalAlignment="Center" Margin="0,3,0,0" />
-                    <!-- Official website -->
+                    <!-- Source repository -->
                     <TextBlock HorizontalAlignment="Center" FontSize="12" Margin="0,6,0,0">
-                        <Hyperlink NavigateUri="https://dockable.app"
+                        <Hyperlink NavigateUri="https://github.com/ved0el/Dockable"
                                    RequestNavigate="Hyperlink_RequestNavigate"
-                                   ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="dockable.app" /><Run
+                                   ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="github.com/ved0el/Dockable" /><Run
                                 FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
                                 Text="&#160;&#xE8A7;" /></Hyperlink>
                     </TextBlock>
 
                     <!-- Friendly intro -->
-                    <Border Background="White" CornerRadius="10" Margin="0,16,0,0" Padding="16,14">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10" Margin="0,16,0,0" Padding="16,14">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
-                        <TextBlock Text="{loc:Loc About_Intro}" FontSize="13" Foreground="#1D1D1F"
+                        <TextBlock Text="{loc:Loc About_Intro}" FontSize="13" Foreground="{DynamicResource SetText}"
                                    TextWrapping="Wrap" LineHeight="19" />
                     </Border>
 
                     <!-- Highlights -->
                     <TextBlock Text="{loc:Loc About_Highlights}" Style="{StaticResource PageHeader}" Margin="2,18,0,8" />
-                    <Border Background="White" CornerRadius="10" Padding="16,12">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10" Padding="16,12">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
@@ -1108,19 +1156,19 @@
 
                     <!-- Built with (clickable technology chips) -->
                     <TextBlock Text="{loc:Loc About_BuiltWith}" Style="{StaticResource PageHeader}" Margin="2,18,0,8" />
-                    <Border Background="White" CornerRadius="10" Padding="14,14,14,6">
+                    <Border Background="{DynamicResource SetCard}" CornerRadius="10" Padding="14,14,14,6">
                         <Border.Effect>
                             <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
                         </Border.Effect>
                         <WrapPanel>
                             <a11y:InvokableCell Style="{StaticResource TechChip}" Tag="https://dotnet.microsoft.com/languages/csharp"
-                                    AutomationProperties.Name="C# · .NET 9"
+                                    AutomationProperties.Name="C# 14 · .NET 10"
                                     MouseLeftButtonUp="OpenLink_Click">
                                 <StackPanel Orientation="Horizontal">
                                     <Border Style="{StaticResource TechBadge}" Background="#512BD4">
                                         <TextBlock Style="{StaticResource TechBadgeText}" Text="C#" />
                                     </Border>
-                                    <TextBlock Style="{StaticResource TechName}" Text="C# · .NET&#160;9" />
+                                    <TextBlock Style="{StaticResource TechName}" Text="C#&#160;14 · .NET&#160;10" />
                                     <TextBlock Style="{StaticResource LinkGlyph}" />
                                 </StackPanel>
                             </a11y:InvokableCell>
@@ -1179,6 +1227,18 @@
                                     <TextBlock Style="{StaticResource LinkGlyph}" />
                                 </StackPanel>
                             </a11y:InvokableCell>
+                            <!-- Liquid Glass: runtime-compiled HLSL pixel shader (refraction, frost, rim light). -->
+                            <a11y:InvokableCell Style="{StaticResource TechChip}" Tag="https://learn.microsoft.com/windows/win32/direct3dhlsl/dx-graphics-hlsl"
+                                    AutomationProperties.Name="HLSL"
+                                    MouseLeftButtonUp="OpenLink_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource TechBadge}" Background="#FF375F">
+                                        <TextBlock Style="{StaticResource TechBadgeText}" Text="FX" />
+                                    </Border>
+                                    <TextBlock Style="{StaticResource TechName}" Text="HLSL shaders" />
+                                    <TextBlock Style="{StaticResource LinkGlyph}" />
+                                </StackPanel>
+                            </a11y:InvokableCell>
                             <!-- SVG rendering for pinned files, stacks, and fan/grid views. -->
                             <a11y:InvokableCell Style="{StaticResource TechChip}" Tag="https://github.com/ElinamLLC/SharpVectors"
                                     AutomationProperties.Name="SharpVectors"
@@ -1196,7 +1256,7 @@
 
                     <!-- Inspiration + author credits -->
                     <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,18,0,0"
-                               FontSize="12" Foreground="#3A3A3C">
+                               FontSize="12" Foreground="{DynamicResource SetBody}">
                         <Hyperlink NavigateUri="https://www.apple.com/macos/"
                                    RequestNavigate="Hyperlink_RequestNavigate"
                                    ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="{loc:Loc About_InspiredBy}" /><Run
@@ -1204,9 +1264,19 @@
                                 Text="&#160;&#xE8A7;" /></Hyperlink>
                     </TextBlock>
                     <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,0"
-                               FontSize="12" Foreground="#3A3A3C">
+                               FontSize="12" Foreground="{DynamicResource SetBody}">
                         <Run Text="{loc:Loc About_CreatedBy}" /><Run Text=" " /><Hyperlink
-                            NavigateUri="https://github.com/jezzlucena"
+                            NavigateUri="https://github.com/ved0el"
+                            RequestNavigate="Hyperlink_RequestNavigate"
+                            ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="Leo" /><Run
+                                FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
+                                Text="&#160;&#xE8A7;" /></Hyperlink>
+                    </TextBlock>
+                    <!-- Original project credit (kept: this is a fork of Jezz Lucena's Dockable). -->
+                    <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,0"
+                               FontSize="12" Foreground="{DynamicResource SetBody}">
+                        <Run Text="{loc:Loc About_BasedOn}" /><Run Text=" " /><Hyperlink
+                            NavigateUri="https://github.com/jezzlucena/Dockable"
                             RequestNavigate="Hyperlink_RequestNavigate"
                             ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="Jezz Lucena" /><Run
                                 FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
@@ -1214,7 +1284,7 @@
                     </TextBlock>
                     <!-- ✨ the web footer's vibe line, with credit where it's due. -->
                     <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,4"
-                               FontSize="12" Foreground="#3A3A3C" FontStyle="Italic">
+                               FontSize="12" Foreground="{DynamicResource SetBody}" FontStyle="Italic">
                         <Run Text="&#x2728;" FontStyle="Normal" /><Run Text=" " /><Hyperlink
                             NavigateUri="https://claude.com/claude-code"
                             RequestNavigate="Hyperlink_RequestNavigate"

@@ -73,6 +73,33 @@ public enum MinimizeEffect
     Genie,
 }
 
+/// <summary>How dock icons react to the cursor hovering over them.</summary>
+public enum HoverEffect
+{
+    /// <summary>macOS fisheye: a wide, smooth wave that grows the icons around the cursor.</summary>
+    Magnify,
+
+    /// <summary>Seelen UI-style zoom: a tight wave — the hovered icon grows, its direct neighbours a
+    /// little, the rest of the row stays still.</summary>
+    Zoom,
+
+    /// <summary>No scaling: the hovered icon rises out of the bar (Windows 11 / Seelen "lift").</summary>
+    Lift,
+}
+
+/// <summary>The motion curve the hover effect follows.</summary>
+public enum HoverAnimation
+{
+    /// <summary>Critically damped springs: settles fast with no overshoot (the classic macOS Dock feel).</summary>
+    Smooth,
+
+    /// <summary>Stiffer critically damped springs that track the cursor tightly.</summary>
+    Snappy,
+
+    /// <summary>Under-damped springs: the wave overshoots slightly and settles with a little bounce.</summary>
+    Spring,
+}
+
 /// <summary>
 /// Root persisted configuration for Dockable. Serialized to
 /// %APPDATA%\Dockable\settings.json by <see cref="Services.SettingsStore"/>.
@@ -140,6 +167,13 @@ public sealed class DockSettings
 
     /// <summary>Whether the macOS-style fisheye magnification is enabled (Phase 2).</summary>
     public bool MagnificationEnabled { get; set; } = true;
+
+    /// <summary>How icons react to hover (macOS magnify / Seelen-style zoom / lift). Only plays while
+    /// <see cref="MagnificationEnabled"/> is on; Lift ignores <see cref="MaxIconSize"/>.</summary>
+    public HoverEffect HoverEffect { get; set; } = HoverEffect.Magnify;
+
+    /// <summary>The motion curve of the hover effect (Smooth / Snappy / Spring).</summary>
+    public HoverAnimation HoverAnimation { get; set; } = HoverAnimation.Smooth;
 
     /// <summary>
     /// How the Windows taskbar is shown while Dockable runs: Always (visible), Auto (native auto-hide,

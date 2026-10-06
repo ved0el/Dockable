@@ -184,6 +184,7 @@ public partial class DockWindow : Window
         IsSecondary && App.Current.MainDock is { } main ? main._thumbnails : _thumbnails;
     // Live acrylic blur rendered in a separate window directly behind the bar.
     private readonly AcrylicBackdrop _acrylic = new();
+    private bool _transparencyEnabled = SystemTheme.TransparencyEnabled(); // last seen OS "Transparency effects"
     private const double BarCornerRadius = 24; // matches DockBackground's CornerRadius
 
     // Liquid Glass (real refraction): a background thread captures the backdrop behind the bar and hands
@@ -382,6 +383,20 @@ public partial class DockWindow : Window
             DockBackground.BorderThickness = new Thickness(1.5); // slightly thicker border on light glass
         }
 
+        // Fluent acrylic: the tint lives in the Composition layers under the bar (AcrylicBackdrop), so
+        // the WPF bar adds no second tint — just the Fluent surface stroke and the 2% grain on top.
+        bool transparency = SystemTheme.TransparencyEnabled();
+        bool acrylic = EffectiveGlass == GlassEffect.Acrylic;
+        _acrylic.SetEffect(dark, transparency);
+        if (acrylic)
+        {
+            Resources["BarBackgroundBrush"] = Brushes.Transparent;
+            Resources["BarBorderBrush"] = UiBrushes.Frozen("#66757575"); // SurfaceStrokeColorDefault
+            DockBackground.BorderThickness = new Thickness(1);
+        }
+        AcrylicNoise.Background = AcrylicNoiseBrush;
+        AcrylicNoise.Visibility = acrylic && transparency ? Visibility.Visible : Visibility.Collapsed;
+
         // Outer icon drop-shadow is a shared, swappable effect: dropped entirely in reduced/Performance
         // mode (the wide BlurRadius=20 pass re-rasterizes per icon per magnify frame — the biggest GPU cost).
         Resources["IconOuterShadowEffect"] = PerformanceProfile.ReduceIconShadows
@@ -409,6 +424,8 @@ public partial class DockWindow : Window
             app["PopupMenuHoverBrush"] = UiBrushes.Frozen("#0F000000");
             app["PopupMenuSeparatorBrush"] = UiBrushes.Frozen("#1A000000");
         }
+
+        _settingsWindow?.ApplyTheme(dark); // Preferences follows the dock's theme (incl. Auto flips)
     }
 
     /// <summary>Builds the (frozen, shared) outer icon drop-shadow at the given opacity.</summary>
@@ -713,6 +730,12 @@ public partial class DockWindow : Window
         if (app.Windows.Count == 0)
         {
             ShortcutService.Launch(app.LaunchPath);
+            // macOS: the icon keeps hopping until the app's first window appears (DockViewModel ends it).
+            if (ViewModel?.Settings.AnimateOpeningApps == true)
+            {
+                app.StartLaunchBounce();
+                HookRendering();
+            }
             return;
         }
 
@@ -893,7 +916,7 @@ public partial class DockWindow : Window
             // Hide, then keep it hidden: Explorer re-shows the tray on its own (attention flashes, Win+M,
             // Explorer/Terminal minimizing), so the watcher re-hides it the instant that happens.
             Taskbar.SetVisibility(mode);
-            _taskbarHideWatcher.Start();
+            _taskbarHideWatcher.Start(new WindowInteropHelper(this).Handle);
         }
         else
         {
@@ -1054,7 +1077,7 @@ public partial class DockWindow : Window
     {
         // Reduced mode keeps LiquidGlass (throttled to a low capture rate — PerformanceProfile
         // .GlassCaptureFps) rather than downgrading it to Acrylic; only shader unavailability falls back.
-        var mode = ViewModel?.Settings.GlassEffect ?? GlassEffect.Acrylic;
+        var mode = EffectiveGlass;
         bool liquid = mode == GlassEffect.LiquidGlass;
         bool refract = liquid && RefractionEffect.IsAvailable; // real pixel-shader refraction
 
@@ -1082,12 +1105,47 @@ public partial class DockWindow : Window
         if (mode == GlassEffect.Simple || refract)
         {
             _acrylic.Hide();
-            return;
         }
-        _acrylic.SetEffect(mode);
-        _acrylic.Show();
-        _haveSynced = false; // force a reposition of the freshly-shown backdrop even if the rect matches
-        SyncAcrylic();
+        else
+        {
+            _acrylic.Show();
+            _haveSynced = false; // force a reposition of the freshly-shown backdrop even if the rect matches
+            SyncAcrylic();
+        }
+        ApplyTheme(); // the bar tint/stroke and acrylic layers depend on the material
+    }
+
+    /// <summary>The material actually rendered. Fluent rule: with Windows' "Transparency effects" off,
+    /// every material shows its opaque fallback — drawn by the acrylic layer — so treat it as Acrylic.</summary>
+    private GlassEffect EffectiveGlass => SystemTheme.TransparencyEnabled()
+        ? ViewModel?.Settings.GlassEffect ?? GlassEffect.Acrylic
+        : GlassEffect.Acrylic;
+
+    /// <summary>Fluent acrylic's noise tile: 128 px of random grey, shown at 2% opacity (AcrylicNoise).</summary>
+    private static readonly ImageBrush AcrylicNoiseBrush = CreateNoiseBrush();
+
+    private static ImageBrush CreateNoiseBrush()
+    {
+        const int size = 128;
+        var pixels = new byte[size * size * 4];
+        var rng = new Random(7); // fixed seed: the grain is a texture, not an animation
+        for (int i = 0; i < pixels.Length; i += 4)
+        {
+            byte v = (byte)rng.Next(256);
+            pixels[i] = pixels[i + 1] = pixels[i + 2] = v;
+            pixels[i + 3] = 0xFF;
+        }
+        var bitmap = BitmapSource.Create(size, size, 96, 96, PixelFormats.Bgra32, null, pixels, size * 4);
+        bitmap.Freeze();
+        var brush = new ImageBrush(bitmap)
+        {
+            TileMode = TileMode.Tile,
+            Viewport = new Rect(0, 0, size, size),
+            ViewportUnits = BrushMappingMode.Absolute,
+            Stretch = Stretch.None,
+        };
+        brush.Freeze();
+        return brush;
     }
 
     /// <summary>Creates (once) and starts the background backdrop capturer, publishing the current bar
@@ -1163,6 +1221,12 @@ public partial class DockWindow : Window
             Saturation = s?.GlassSaturation ?? 1.8, // 180% — richer colour behind the glass
             Shininess = 3.0, // broad lobe so the glint carries around the rim into the corners
             RimSharpness = 4.0, // thin, border-like glint hugging the very edge
+            // Liquid Glass lighting (tunable by feel): crisp key-lit edge, Fresnel rim, thickness
+            // shade, and adaptive tone so the bar reads evenly over bright and dark backdrops.
+            EdgeLight = 0.9,
+            Fresnel = 0.14,
+            InnerShadow = 0.22,
+            ToneAdapt = 0.15,
             SpecularIntensity = GlassSpecAmbient
                 + (_glassSpecPeak - GlassSpecAmbient) * GlassSpecRestAmount, // start at the resting sheen
             // Resting spot with no pointer on the dock: the bar's left/top-most end.
@@ -2096,11 +2160,20 @@ public partial class DockWindow : Window
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         // The OS light/dark setting changed — re-theme if we're following the system.
-        if (msg == WM_SETTINGCHANGE
-            && ViewModel?.Settings.Theme == DockTheme.System
-            && SystemTheme.IsImmersiveColorChange(lParam))
+        // ImmersiveColorSet also announces the "Transparency effects" toggle, which swaps every
+        // material for its opaque fallback (or back) — re-run the glass setup, which re-themes too.
+        if (msg == WM_SETTINGCHANGE && SystemTheme.IsImmersiveColorChange(lParam))
         {
-            ApplyTheme();
+            bool transparency = SystemTheme.TransparencyEnabled();
+            if (transparency != _transparencyEnabled)
+            {
+                _transparencyEnabled = transparency;
+                ApplyGlassEffect();
+            }
+            else if (ViewModel?.Settings.Theme == DockTheme.System)
+            {
+                ApplyTheme();
+            }
         }
 
         // An app is requesting attention (flashing its taskbar button): bounce its dock icon.

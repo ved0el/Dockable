@@ -29,7 +29,6 @@ public sealed class DockLayoutEngine
     // TimeSmooth) so an animation lasts the same wall-clock time at any frame rate — on a slow machine
     // that means fewer, larger steps (frame-skipping) rather than the same small steps stretched over
     // more real time (which made appear/disappear drag on and magnification trail the cursor).
-    private const double Smoothing = 0.35;       // scale easing
     private const double AppearSmoothing = 0.18;  // add/remove (grow-in / shrink-out) easing
     private const double DragPosSmoothing = 0.28; // position easing while dragging / settling
     private const double ReferenceFrameMs = 1000.0 / 60.0; // the frame time the factors above assume
@@ -40,6 +39,30 @@ public sealed class DockLayoutEngine
     /// correspondingly larger step. Never overshoots (result stays in [0,1)).</summary>
     private static double TimeSmooth(double k, double dtMs)
         => 1.0 - Math.Pow(1.0 - k, dtMs / ReferenceFrameMs);
+    // Hover-effect shapes and feels (tunable by feel — see DockSettings.HoverEffect/HoverAnimation).
+    private const double ZoomRadiusCells = 1.75;  // Zoom: wave radius in icon cells (hovered + direct neighbours)
+    private const double LiftRadiusCells = 1.0;   // Lift: only the hovered icon rises fully
+    private const double LiftHeight = 0.3;        // Lift: peak rise as a fraction of the base icon size
+
+    // The hover motion is two springs, not a per-icon ease: a smoothed CURSOR and a hover AMOUNT
+    // (0 = rest, 1 = fully engaged). Every icon's scale/lift is then computed from the same wave each
+    // frame, so the wave keeps its shape at any cursor speed (per-icon easing let each icon trail on
+    // its own and visibly wobbled the row). Natural frequency ω (rad/s) and damping ratio ζ per feel:
+    // ζ = 1 is critically damped (fastest approach with no overshoot), ζ < 1 overshoots and settles.
+    private static (double Omega, double Zeta) CursorSpring(HoverAnimation feel) => feel switch
+    {
+        HoverAnimation.Snappy => (42, 1.0),
+        HoverAnimation.Spring => (20, 0.62),
+        _ => (24, 1.0),
+    };
+    private static (double Omega, double Zeta) AmountSpring(HoverAnimation feel) => feel switch
+    {
+        HoverAnimation.Snappy => (28, 1.0),
+        HoverAnimation.Spring => (17, 0.45),
+        _ => (15, 1.0),
+    };
+    private const double SpringStepMs = 4;        // integration sub-step (stable for ω up to ~100 at any FPS)
+
     private const double DragScale = 1.12;        // the lifted tile is slightly enlarged
     private const double DragLift = 14;           // and raised (deeper) than the row
 
@@ -64,7 +87,11 @@ public sealed class DockLayoutEngine
 
     private double _baseSize = 48;
     private double _maxScale = 2;
-    private double _radius = 160;
+    private double _radius = 160;      // hover wave radius for the active HoverEffect
+    private double _liftHeight;        // peak hover lift in DIP (Lift effect only; 0 otherwise)
+    private HoverAnimation _feel;
+    private double _hoverCursor, _hoverCursorVel; // smoothed cursor along the main axis (resting-row space)
+    private double _hoverAmount, _hoverAmountVel; // 0 = no hover effect, 1 = fully engaged
     private double _restingAlong;      // resting extent of the whole row along the main axis
     private double _restingBlockMain;  // main-axis start of the resting (un-magnified) row
     private double _alongWindow;       // window size along the main axis (eased toward the target)
@@ -148,8 +175,16 @@ public sealed class DockLayoutEngine
     {
         var s = _vm.Settings;
         _baseSize = s.IconSize > 0 ? s.IconSize : 48;
-        _maxScale = s.MagnificationEnabled && s.MaxIconSize > _baseSize ? s.MaxIconSize / _baseSize : 1.0;
-        _radius = s.MagnificationRadius > 0 ? s.MagnificationRadius : 160;
+        bool lift = s.HoverEffect == HoverEffect.Lift;
+        _maxScale = !lift && s.MagnificationEnabled && s.MaxIconSize > _baseSize ? s.MaxIconSize / _baseSize : 1.0;
+        _liftHeight = lift && s.MagnificationEnabled ? _baseSize * LiftHeight : 0;
+        _radius = s.HoverEffect switch
+        {
+            HoverEffect.Zoom => _baseSize * ZoomRadiusCells,
+            HoverEffect.Lift => _baseSize * LiftRadiusCells,
+            _ => s.MagnificationRadius > 0 ? s.MagnificationRadius : 160,
+        };
+        _feel = s.HoverAnimation;
 
         int n = _vm.Items.Count;
         _restingAlong = -Gap;
@@ -160,7 +195,7 @@ public sealed class DockLayoutEngine
 
         double grownHeight = _baseSize * _maxScale;
         // Reserve enough depth for whichever is taller: a magnified icon or a bouncing one.
-        double iconArea = Math.Max(grownHeight, _baseSize + _baseSize * BounceLift);
+        double iconArea = Math.Max(grownHeight, _baseSize + _baseSize * BounceLift + _liftHeight);
         _crossWindow = iconArea + EdgeMargin + TopHeadroom + 8;
         // The extent any magnified bar (plus a drag gap) can cover — the window size when no fixed
         // extent is pinned, and always the cursor hover footprint (see HoverExtentMain).
@@ -195,7 +230,7 @@ public sealed class DockLayoutEngine
         double maxCell = _baseSize * _maxScale;
         double maxRender = maxCell * IconFill;
         double magNear = EdgeMargin + (maxCell - maxRender) / 2;
-        _vm.MagnifiedTop = _crossWindow - magNear - maxRender;
+        _vm.MagnifiedTop = _crossWindow - magNear - maxRender - _liftHeight;
 
         // One nominal step with the LAST-SEEN cursor state — never a forced "no hover". Recomputes
         // run mid-hover (a departed tile finalizing, the 1 s refresh reconciling): the old reset of
@@ -232,7 +267,6 @@ public sealed class DockLayoutEngine
     {
         _lastMouseMain = mouseMain; // remembered for Recompute's nominal step (see Recompute)
         _lastHovering = hovering;
-        double scaleSmooth = TimeSmooth(Smoothing, dtMs);
         double appearSmooth = TimeSmooth(AppearSmoothing, dtMs);
         double dragSmooth = TimeSmooth(DragPosSmoothing, dtMs);
         var items = _vm.Items;
@@ -278,25 +312,40 @@ public sealed class DockLayoutEngine
             _gapExtent = gapTarget;
         }
 
-        // --- Scales (magnification suppressed during a drag/drop gap for a stable parting) ---
+        // --- Hover wave (suppressed during a drag/drop gap for a stable parting) ---
+        bool engaged = !gapMode && hovering;
         double cursorContent = cursorMain - _restingBlockMain;
+        if (engaged)
+        {
+            // Entering from rest: start the wave UNDER the cursor and grow it there, instead of
+            // sliding it in from wherever the pointer last left.
+            if (_hoverAmount < 0.02)
+            {
+                _hoverCursor = cursorContent;
+                _hoverCursorVel = 0;
+            }
+            var (cw, cz) = CursorSpring(_feel);
+            if (StepSpring(ref _hoverCursor, ref _hoverCursorVel, cursorContent, cw, cz, dtMs, 0.05))
+                animating = true;
+        }
+        // Leaving: the cursor spring holds still, so the wave shrinks back in place (macOS).
+        var (aw, az) = AmountSpring(_feel);
+        if (StepSpring(ref _hoverAmount, ref _hoverAmountVel, engaged ? 1.0 : 0.0, aw, az, dtMs, 0.001))
+            animating = true;
+        double amount = Math.Max(0.0, _hoverAmount); // a spring undershoot must not shrink icons below rest
+
         double rest = 0;
         for (int i = 0; i < n; i++)
         {
-            double bc = BaseCell(items[i]);
+            var it = items[i];
+            double bc = BaseCell(it);
             double restCenter = rest + bc / 2;
             rest += bc + Gap;
-            double target = !gapMode && hovering && !items[i].IsSeparator
-                ? 1.0 + (_maxScale - 1.0) * Falloff(Math.Abs(cursorContent - restCenter), _radius)
-                : 1.0;
-
-            double cur = items[i].CurrentScale;
-            cur += (target - cur) * scaleSmooth;
-            if (Math.Abs(target - cur) < 0.001)
-                cur = target;
-            else
-                animating = true;
-            items[i].CurrentScale = cur;
+            double wave = it.IsSeparator || amount == 0.0
+                ? 0.0
+                : Falloff(Math.Abs(_hoverCursor - restCenter), _radius) * amount;
+            it.CurrentScale = 1.0 + (_maxScale - 1.0) * wave;
+            it.HoverLift = _liftHeight * wave;
 
             // Appearance scale: ease toward 1 (added) or 0 (removed) so the row's width transitions
             // smoothly. A growing/shrinking cell pushes neighbours apart / lets them close in.
@@ -380,14 +429,16 @@ public sealed class DockLayoutEngine
 
             // Launch/attention bounce: lift only the ICON via its render transform — the container
             // (and with it the running dot at the bar edge) stays put instead of hopping along.
+            // The Lift hover effect rides the same channel.
             if (item.UpdateBounce(_baseSize * BounceLift))
                 animating = true;
+            double rise = item.BounceOffset + item.HoverLift;
             switch (Edge)
             {
-                case DockEdge.Top: item.BounceX = 0; item.BounceY = item.BounceOffset; break;
-                case DockEdge.Left: item.BounceX = item.BounceOffset; item.BounceY = 0; break;
-                case DockEdge.Right: item.BounceX = -item.BounceOffset; item.BounceY = 0; break;
-                default: item.BounceX = 0; item.BounceY = -item.BounceOffset; break; // Bottom: up
+                case DockEdge.Top: item.BounceX = 0; item.BounceY = rise; break;
+                case DockEdge.Left: item.BounceX = rise; item.BounceY = 0; break;
+                case DockEdge.Right: item.BounceX = -rise; item.BounceY = 0; break;
+                default: item.BounceX = 0; item.BounceY = -rise; break; // Bottom: up
             }
 
             PlaceItem(item, mainPos, renderAlong, renderCross, nearDepth);
@@ -561,6 +612,33 @@ public sealed class DockLayoutEngine
             return firstPath + insertIndex;
         int recycle = placed.FindIndex(p => p.IsRecycleBin);
         return recycle >= 0 ? recycle : placed.Count;
+    }
+
+    /// <summary>Advances a damped spring (natural frequency <paramref name="omega"/> rad/s, damping
+    /// ratio <paramref name="zeta"/>) toward <paramref name="target"/>. Semi-implicit Euler in small
+    /// sub-steps; dt is capped because the first frame after the loop was paused (a warp, an idle
+    /// detach) can report a huge delta that would launch the spring. Returns true while it still
+    /// moves; snaps to the target (velocity zeroed) once within <paramref name="eps"/>.</summary>
+    private static bool StepSpring(ref double value, ref double velocity, double target,
+        double omega, double zeta, double dtMs, double eps)
+    {
+        double remaining = Math.Min(dtMs, 50);
+        double k = omega * omega, c = 2 * zeta * omega;
+        while (remaining > 0)
+        {
+            double dt = Math.Min(remaining, SpringStepMs) / 1000.0;
+            velocity += (k * (target - value) - c * velocity) * dt;
+            value += velocity * dt;
+            remaining -= SpringStepMs;
+        }
+
+        if (Math.Abs(target - value) < eps && Math.Abs(velocity) < eps * 10)
+        {
+            value = target;
+            velocity = 0;
+            return false;
+        }
+        return true;
     }
 
     private static double Falloff(double distance, double radius)

@@ -619,17 +619,19 @@ public partial class MenuBarWindow : Window
     {
         bool dark = SystemTheme.IsDarkEffective(ViewModel?.Settings.Theme ?? DockTheme.System);
 
-        // Same bar colours as the dock, at 50% transparency (the acrylic blur shows through). Text
-        // contrasts with the background per the Appearance (theme) setting.
+        // Fluent acrylic, like the Windows 11 taskbar: the tint is in the Composition layers under the
+        // bar (opaque fallback while "Transparency effects" is off), so the WPF bar itself stays clear.
+        // Text contrasts per the Appearance (theme) setting.
+        _acrylic.SetEffect(dark, SystemTheme.TransparencyEnabled());
+        Resources["BarBackgroundBrush"] = System.Windows.Media.Brushes.Transparent;
         if (dark)
         {
-            Resources["BarBackgroundBrush"] = UiBrushes.Frozen("#80242424"); // dock dark bg (#242424) @ 50%
             Resources["MenuTextBrush"] = UiBrushes.Frozen("#FFF2F2F2");
             Resources["MenuHighlightBrush"] = UiBrushes.Frozen("#26FFFFFF"); // active pill: almost-transparent white
         }
         else
         {
-            Resources["BarBackgroundBrush"] = UiBrushes.Frozen("#80FFFFFF"); // dock light bg (#FFFFFF) @ 50%
+
             Resources["MenuTextBrush"] = UiBrushes.Frozen("#FF1D1D1F");
             Resources["MenuHighlightBrush"] = UiBrushes.Frozen("#17000000"); // active pill: almost-transparent black
         }
@@ -671,9 +673,8 @@ public partial class MenuBarWindow : Window
 
     private void ApplyGlassEffect()
     {
-        // The menu bar is always acrylic (a translucent blur behind its tint), independent of the dock's
-        // Glass Effect setting — the bar's own brush is translucent so the blur shows through.
-        _acrylic.SetEffect(GlassEffect.Acrylic);
+        // The menu bar is always acrylic, independent of the dock's Glass Effect setting.
+        ApplyTheme(); // sets the acrylic layers for the theme
         SyncAcrylic();
         _acrylic.Show();
     }
@@ -729,12 +730,9 @@ public partial class MenuBarWindow : Window
         // (nested-submenu WM_INITMENUPOPUP, NOTIFYBYPOS picks) — they arrive at us as the popup owner.
         Win32AppMenu.ForwardMenuMessage(msg, wParam, lParam);
 
-        if (msg == WM_SETTINGCHANGE
-            && ViewModel?.Settings.Theme == DockTheme.System
-            && SystemTheme.IsImmersiveColorChange(lParam))
-        {
+        // ImmersiveColorSet covers both the OS light/dark flip and the "Transparency effects" toggle.
+        if (msg == WM_SETTINGCHANGE && SystemTheme.IsImmersiveColorChange(lParam))
             ApplyTheme();
-        }
 
         if ((uint)msg == MenuBarCallbackMessage)
         {

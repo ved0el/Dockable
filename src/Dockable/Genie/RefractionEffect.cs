@@ -65,6 +65,22 @@ public sealed class RefractionEffect : ShaderEffect
         DependencyProperty.Register(nameof(BezelFraction), typeof(double), typeof(RefractionEffect),
             new UIPropertyMetadata(0.6, PixelShaderConstantCallback(11)));
 
+    public static readonly DependencyProperty EdgeLightProperty =
+        DependencyProperty.Register(nameof(EdgeLight), typeof(double), typeof(RefractionEffect),
+            new UIPropertyMetadata(0.0, PixelShaderConstantCallback(12)));
+
+    public static readonly DependencyProperty FresnelProperty =
+        DependencyProperty.Register(nameof(Fresnel), typeof(double), typeof(RefractionEffect),
+            new UIPropertyMetadata(0.0, PixelShaderConstantCallback(13)));
+
+    public static readonly DependencyProperty InnerShadowProperty =
+        DependencyProperty.Register(nameof(InnerShadow), typeof(double), typeof(RefractionEffect),
+            new UIPropertyMetadata(0.0, PixelShaderConstantCallback(14)));
+
+    public static readonly DependencyProperty ToneAdaptProperty =
+        DependencyProperty.Register(nameof(ToneAdapt), typeof(double), typeof(RefractionEffect),
+            new UIPropertyMetadata(0.0, PixelShaderConstantCallback(15)));
+
     /// <summary>True when the shader compiled/loaded AND the GPU supports ps_3_0 in hardware. ps_3_0 has
     /// no WPF software-rendering path, so on a software/RDP renderer we report unavailable and the caller
     /// falls back to Acrylic + the rim sheen rather than rendering a blank layer.</summary>
@@ -91,6 +107,42 @@ public sealed class RefractionEffect : ShaderEffect
         UpdateShaderValue(RimSharpnessProperty);
         UpdateShaderValue(CornerFractionProperty);
         UpdateShaderValue(BezelFractionProperty);
+        UpdateShaderValue(EdgeLightProperty);
+        UpdateShaderValue(FresnelProperty);
+        UpdateShaderValue(InnerShadowProperty);
+        UpdateShaderValue(ToneAdaptProperty);
+    }
+
+    /// <summary>Always-on specular edge (Liquid Glass): a crisp ~1.5 px line around the rim, brightest
+    /// where the edge faces a fixed top-left key light, with a dimmer bounce on the far edge. Final pass only.</summary>
+    public double EdgeLight
+    {
+        get => (double)GetValue(EdgeLightProperty);
+        set => SetValue(EdgeLightProperty, value);
+    }
+
+    /// <summary>Fresnel lift: glass reflects more at grazing angles, so the backdrop washes toward white
+    /// across the curved rim band. Final pass only.</summary>
+    public double Fresnel
+    {
+        get => (double)GetValue(FresnelProperty);
+        set => SetValue(FresnelProperty, value);
+    }
+
+    /// <summary>Thickness cue: a soft shade inside the rim on the side facing away from the key light.
+    /// Final pass only.</summary>
+    public double InnerShadow
+    {
+        get => (double)GetValue(InnerShadowProperty);
+        set => SetValue(InnerShadowProperty, value);
+    }
+
+    /// <summary>Adaptive tone: pulls the backdrop's brightness toward mid-grey (hue kept), so the glass
+    /// reads evenly — and icons stay legible — over both very bright and very dark content. Final pass only.</summary>
+    public double ToneAdapt
+    {
+        get => (double)GetValue(ToneAdaptProperty);
+        set => SetValue(ToneAdaptProperty, value);
     }
 
     /// <summary>The content to refract (s0). Auto-bound to the element the effect is applied to.</summary>
@@ -235,10 +287,14 @@ float  shininess  : register(c8);   // specular exponent (higher = tighter glint
 float  rimSharp   : register(c9);   // radial concentration of the glint (higher = thinner border)
 float  cornerFrac : register(c10);  // corner radius as a fraction of the bar thickness (short side)
 float  bezelFrac  : register(c11);  // rim band width as a fraction of the bar thickness (short side)
+float  edgeLight  : register(c12);  // always-on specular edge line (final pass only)
+float  fresnel    : register(c13);  // grazing-angle white lift across the rim band (final pass only)
+float  innerShade : register(c14);  // thickness shade on the rim away from the key light (final pass only)
+float  toneAdapt  : register(c15);  // brightness pulled toward mid-grey for even legibility (final pass only)
 
 // Analytic rounded-rectangle rim field in device-pixel space (aspect-correct). Returns the outward unit
 // normal in .xy and the refraction magnitude (0 across the flat centre → 1 at the rim) in .z.
-float3 rimField(float2 uv)
+float3 rimField(float2 uv, out float dist)
 {
     float2 sizePx = float2(1.0 / ddxy.x, 1.0 / ddxy.w);
     float2 bb = sizePx * 0.5;
@@ -249,7 +305,7 @@ float3 rimField(float2 uv)
     float2 pc = (uv - 0.5) * sizePx;                 // centred pixel coords
     float2 q = abs(pc) - bb + R;
     float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - R; // < 0 inside
-    float dist = -sd;                                 // px from the nearest edge
+    dist = -sd;                                       // px from the nearest edge
 
     float2 n = (max(q.x, q.y) > 0.0)
         ? normalize(max(q, 0.0) + 1e-6) * sign(pc)    // on a corner arc
@@ -266,7 +322,8 @@ float3 rimField(float2 uv)
 
 float4 main(float2 uv : TEXCOORD) : COLOR
 {
-    float3 rf = rimField(uv);
+    float dist;
+    float3 rf = rimField(uv, dist);
     float2 n = rf.xy;                                 // outward rim normal (unit)
     float  m = rf.z;                                  // refraction magnitude (0 centre → 1 rim)
 
@@ -309,6 +366,20 @@ float4 main(float2 uv : TEXCOORD) : COLOR
     float spec = pow(saturate(dot(n, ldir)), shininess)
                + pow(saturate(dot(n, ldir2)), shininess);
     c.rgb += spec * edge * specInt;
+
+    // --- Liquid Glass lighting (the 2025 material): all four are 0 on the refraction pass. ---
+    // Adaptive tone: shift brightness toward mid-grey, keeping the hue/chroma (luma-only offset).
+    float l2 = dot(c.rgb, float3(0.299, 0.587, 0.114));
+    c.rgb += (lerp(l2, 0.5, toneAdapt) - l2) * c.a;
+    // Fixed key light from the top-left (screen space, y down), like the system material's.
+    float facing = dot(n, normalize(float2(-0.55, -0.83)));
+    // Thickness: shade the rim band facing away from the light.
+    c.rgb *= 1.0 - innerShade * m * saturate(-facing);
+    // Fresnel: grazing angles reflect more — wash the curved rim toward white.
+    c.rgb += (c.a - c.rgb) * (m * m) * fresnel;
+    // Specular edge: a crisp line hugging the silhouette, bright toward the light, dim bounce opposite.
+    float lineW = (dist >= 0.0) ? saturate(1.0 - dist / 1.6) : 0.0;
+    c.rgb += lineW * edgeLight * (0.6 * saturate(facing) + 0.25 * saturate(-facing) + 0.15) * c.a;
     return c;
 }";
 }

@@ -196,7 +196,7 @@ IsMenu
 SetSuspendState
 LockWorkStation
 
-// --- Menu bar (Windows-logo menu): the signed-in user's friendly display name ("Jezz Lucena") ---
+// --- Menu bar (Windows-logo menu): the signed-in user's friendly display name ("Jane Doe") ---
 GetUserNameEx
 EXTENDED_NAME_FORMAT
 
@@ -237,3 +237,5 @@ FindResource
 LoadResource
 LockResource
 SizeofResource
+IsHungAppWindow
+DwmExtendFrameIntoClientArea

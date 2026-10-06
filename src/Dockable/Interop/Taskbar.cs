@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using Dockable.Models;
 using Windows.Win32;
@@ -49,7 +50,35 @@ public static class Taskbar
     /// Remembers the taskbar's auto-hide state at startup (once) so <see cref="Restore"/> can put
     /// it back to whatever the user had, instead of assuming a default.
     /// </summary>
-    public static void CaptureOriginalState() => _originalAutoHide ??= IsAutoHide();
+    public static void CaptureOriginalState()
+    {
+        if (_originalAutoHide is not null)
+            return;
+        // A marker left behind means the previous run never restored (killed AND its watchdog failed):
+        // the live state is then OUR hidden auto-hide state, not the user's — trust the marker instead.
+        try
+        {
+            if (File.Exists(StateFile) && bool.TryParse(File.ReadAllText(StateFile).Trim(), out bool saved))
+            {
+                _originalAutoHide = saved;
+                return;
+            }
+        }
+        catch { /* unreadable marker: fall back to the live probe */ }
+
+        _originalAutoHide = IsAutoHide();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(StateFile)!);
+            File.WriteAllText(StateFile, _originalAutoHide.Value.ToString());
+        }
+        catch { /* best-effort; the in-process + watchdog restores still work without it */ }
+    }
+
+    /// <summary>The pre-launch auto-hide state, persisted while the dock runs and deleted once restored.
+    /// Also deleted by the out-of-process watchdog after it restores.</summary>
+    internal static string StateFile { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Dockable", "taskbar-original.txt");
 
     /// <summary>The captured pre-launch auto-hide state (null until <see cref="CaptureOriginalState"/>
     /// runs) — handed to the out-of-process watchdog so it can restore after a force-kill.</summary>
@@ -58,8 +87,10 @@ public static class Taskbar
     /// <summary>Restores the taskbar to the state captured by <see cref="CaptureOriginalState"/>.</summary>
     public static void Restore()
     {
-        if (_originalAutoHide is bool original)
-            SetAutoHide(original);
+        if (_originalAutoHide is not bool original)
+            return;
+        SetAutoHide(original);
+        try { File.Delete(StateFile); } catch { /* best-effort */ }
     }
 
     /// <summary>
@@ -71,7 +102,7 @@ public static class Taskbar
         switch (mode)
         {
             case TaskbarVisibility.Always:
-                EnsureTrayWindowsShown();
+                ShowTrayWindows();
                 SetState(autoHide: false);
                 break;
             case TaskbarVisibility.Never:
@@ -86,7 +117,7 @@ public static class Taskbar
                 Task.Delay(750).ContinueWith(_ => Hide());
                 break;
             default: // Auto
-                EnsureTrayWindowsShown();
+                ShowTrayWindows();
                 SetState(autoHide: true);
                 break;
         }
@@ -99,7 +130,7 @@ public static class Taskbar
     public static void SetAutoHide(bool enable)
     {
         // Undo any force-hide (auto-hide only works on a shown window) and (re)assert the state.
-        EnsureTrayWindowsShown();
+        ShowTrayWindows();
         SetState(enable);
     }
 
@@ -168,7 +199,8 @@ public static class Taskbar
         return visible;
     }
 
-    private static void EnsureTrayWindowsShown() => ForEachTrayWindow(hwnd =>
+    /// <summary>SW_SHOWs every taskbar window (no appbar-state change).</summary>
+    internal static void ShowTrayWindows() => ForEachTrayWindow(hwnd =>
     {
         PInvoke.ShowWindow(hwnd, SHOW_WINDOW_CMD.SW_SHOW);
         return true;

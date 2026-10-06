@@ -603,18 +603,22 @@ public sealed partial class DockViewModel : ObservableObject
         vm!.LaunchPath = launchPath;
         var handles = windows ?? (IReadOnlyList<IntPtr>)Array.Empty<IntPtr>();
 
-        // Bounce the icon when the app gains a window it didn't have last refresh (e.g. on launch).
-        // Skipped on the first refresh (apps already open shouldn't all bounce at startup).
-        if (_appsInitialized && Settings.AnimateOpeningApps)
+        // macOS launch feedback. A dock-launched app is already hopping (StartLaunchBounce on click):
+        // its first window means it finished launching, so it lands at the end of the hop in flight.
+        // An app launched some other way gets one hop when its first window appears. A running app
+        // opening ANOTHER window doesn't bounce (macOS doesn't either). Skipped on the first refresh
+        // (apps already open shouldn't all bounce at startup).
+        bool gainedWindow = false;
+        foreach (var h in handles)
         {
-            foreach (var h in handles)
-            {
-                if (vm.HasWindow(h))
-                    continue;
-                vm.StartBounce();
-                _bounceRequested = true;
-                break;
-            }
+            if (!vm.HasWindow(h)) { gainedWindow = true; break; }
+        }
+        if (gainedWindow && vm.IsLaunchBouncing)
+            vm.EndLaunchBounce();
+        else if (gainedWindow && vm.Windows.Count == 0 && _appsInitialized && Settings.AnimateOpeningApps)
+        {
+            vm.StartBounce();
+            _bounceRequested = true;
         }
         vm.SetKnownWindows(handles);
 

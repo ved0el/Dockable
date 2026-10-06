@@ -41,9 +41,19 @@ paths:
   `Stop-Process`) skip all in-process handlers, so `App.OnStartup` also spawns the out-of-process
   `Interop/TaskbarWatchdog` (hidden `powershell.exe`, handed the captured state): it waits on the
   dock's PID and re-asserts that state (SW_SHOW all tray windows + ABM_SETSTATE) when the dock dies
-  for ANY reason, then exits by itself. So even **Never** now survives a force-kill. The watchdog's
-  restore after a clean exit is an idempotent no-op, and it skips the restore entirely if a new dock
-  instance is already running by the time it wakes (quick-restart race, 750 ms grace).
+  for ANY reason, then exits by itself. So even **Never** now survives a force-kill. The script
+  compiles its `Add-Type` C# **before** `Wait-Process` (csc costs ~1–2 s), sweeps every tray window via
+  `EnumWindows` (never `FindWindow` — same ghost-tray rule as `Taskbar.cs`), and retries up to ~30 s
+  while no real tray exists (Explorer down/restarting). `TaskbarWatchdog` keeps the `Process` and
+  **respawns** it (≤5×) if it exits while the dock is alive; a spawn failure is logged to crash.log.
+- **Persisted pre-launch state**: `CaptureOriginalState` writes it to
+  `%APPDATA%\Dockable\taskbar-original.txt`; `Restore()` and the watchdog delete it. If the marker
+  still exists at startup, the previous run never restored (live state = our hidden state), so the
+  marker wins over the live probe.
+- **Hung dock**: `TaskbarHideWatcher.Start(dockHwnd)` checks `IsHungAppWindow` each tick; while the
+  dock's UI thread is hung it stops re-hiding and `ShowTrayWindows()` once, resuming when it responds.
+- The watchdog's restore after a clean exit is an idempotent no-op, and it skips the restore entirely if a
+  new dock instance is already running by the time it wakes (quick-restart race, 750 ms grace).
 - Note the **conflict to watch**: the dock also lives at the bottom, so revealing the native taskbar
   pops it up over/under the dock at the same edge. Accepted per user request (taskbar on demand).
 

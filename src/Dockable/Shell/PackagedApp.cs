@@ -58,7 +58,7 @@ internal static class PackagedApp
     private static PackagedInfo? Resolve(string exePath)
     {
         // Tested in here rather than at the entry point so EVERY path is cached after first sight —
-        // this runs per-window on the 1 s refresh, which CLAUDE.md keeps free of per-tick work.
+        // this runs per-window on the 1 s refresh, which AGENTS.md keeps free of per-tick work.
         if (!IsPackagedPath(exePath))
             return null;
 

@@ -293,7 +293,7 @@ public partial class App : Application
         e.Handled = true;
     }
 
-    private static void LogCrash(Exception? ex, string source)
+    internal static void LogCrash(Exception? ex, string source)
     {
         try
         {

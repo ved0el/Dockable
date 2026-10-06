@@ -304,6 +304,18 @@
             </Border.Effect>
         </Border>
 
+        <!-- Fluent acrylic's top layer: a tiled grain at ~2% that keeps the blur from reading as plastic
+             (Background set in code). Acrylic mode only; click-through. -->
+        <Border x:Name="AcrylicNoise"
+                Canvas.Left="{Binding BarLeft}"
+                Canvas.Top="{Binding BarTop}"
+                Width="{Binding BarWidth}"
+                Height="{Binding BarHeight}"
+                CornerRadius="24"
+                Opacity="0.02"
+                IsHitTestVisible="False"
+                Visibility="Collapsed" />
+
         <!-- Liquid Glass: a curved-rim highlight + top specular sheen layered over the acrylic. The
              middle stays clear so the blur shows through ("flat center, glassy edge"). Click-through;
              shown only in LiquidGlass mode (toggled in ApplyGlassEffect). -->

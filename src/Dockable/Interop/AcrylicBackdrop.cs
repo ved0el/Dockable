@@ -1,6 +1,5 @@
 using System.Numerics;
 using System.Runtime.InteropServices;
-using Dockable.Models;
 using Windows.UI.Composition;
 using Windows.UI.Composition.Desktop;
 using WinRT;
@@ -17,8 +16,10 @@ namespace Dockable.Interop;
 /// dock's icon window. Hosts a <see cref="Windows.UI.Composition"/> tree on its own
 /// <c>WS_EX_NOREDIRECTIONBITMAP</c> HWND.
 ///
-/// Stage 1: a host-backdrop brush (standard acrylic blur) + rounded clip + bar tracking. The custom
-/// 20px-blur / 180%-saturation / liquid-glass displacement effect graph is layered on in later stages.
+/// The layers follow the Fluent (Windows 11) acrylic recipe, bottom-up: the system host-backdrop blur,
+/// a luminosity layer, a tint layer (here) and a ~2% noise texture (the WPF <c>AcrylicNoise</c> border
+/// on the bar). When Windows' "Transparency effects" is off the whole stack collapses to the opaque
+/// fallback colour, as Fluent materials do.
 /// </summary>
 public sealed class AcrylicBackdrop : IDisposable
 {
@@ -50,6 +51,8 @@ public sealed class AcrylicBackdrop : IDisposable
     private Compositor? _compositor;
     private DesktopWindowTarget? _target;
     private SpriteVisual? _visual;
+    private SpriteVisual? _luminosity;
+    private SpriteVisual? _tint;
     private CompositionRoundedRectangleGeometry? _clipGeometry;
     private bool _ready;
 
@@ -70,6 +73,14 @@ public sealed class AcrylicBackdrop : IDisposable
 
         _visual = _compositor.CreateSpriteVisual();
         // Brush is assigned by SetEffect() (Acrylic vs Liquid Glass).
+
+        // Luminosity + tint layers stretch over the blur (children inherit the root's rounded clip).
+        _luminosity = _compositor.CreateSpriteVisual();
+        _luminosity.RelativeSizeAdjustment = Vector2.One;
+        _tint = _compositor.CreateSpriteVisual();
+        _tint.RelativeSizeAdjustment = Vector2.One;
+        _visual.Children.InsertAtTop(_luminosity);
+        _visual.Children.InsertAtTop(_tint);
 
         _clipGeometry = _compositor.CreateRoundedRectangleGeometry();
         _visual.Clip = _compositor.CreateGeometricClip(_clipGeometry);
@@ -149,24 +160,40 @@ public sealed class AcrylicBackdrop : IDisposable
     }
 
     /// <summary>
-    /// Sets the backdrop brush. Acrylic and Liquid Glass both currently use the system host-backdrop
-    /// blur: a custom blur/saturation/displacement effect graph isn't achievable through CsWinRT in
-    /// this app (the hand-built native effect path crashed the process), so Liquid Glass renders the
-    /// same acrylic for now — safely.
+    /// Applies the Fluent acrylic layers for the theme (Desktop acrylic, "AcrylicBackgroundFillColor
+    /// Default": light tint #FCFCFC / luminosity 0.85, dark tint #2C2C2C @ 0.15 / luminosity 0.96), or
+    /// the opaque fallback (#F9F9F9 / #2C2C2C) when <paramref name="transparency"/> is off.
     /// </summary>
-    public void SetEffect(GlassEffect mode)
+    public void SetEffect(bool dark, bool transparency)
     {
-        if (!_ready || _compositor is null || _visual is null)
+        if (!_ready || _compositor is null || _visual is null || _luminosity is null || _tint is null)
             return;
         try
         {
+            if (!transparency)
+            {
+                _visual.Brush = _compositor.CreateColorBrush(dark ? Rgb(0x2C, 0x2C, 0x2C) : Rgb(0xF9, 0xF9, 0xF9));
+                _luminosity.IsVisible = _tint.IsVisible = false;
+                return;
+            }
             _visual.Brush = _compositor.CreateHostBackdropBrush();
+            // ponytail: WinUI composites the luminosity layer with a Luminosity BLEND (keeps the
+            // backdrop's hue); that needs a Composition effect graph, which crashed this process when
+            // hand-built. A normal-blend layer at reduced alpha approximates it — swap in a real
+            // BlendEffect if Win2D-style effects ever become available here.
+            _luminosity.Brush = _compositor.CreateColorBrush(dark
+                ? Windows.UI.Color.FromArgb(0x9C, 0x2C, 0x2C, 0x2C)   // ~0.61 ≈ 0.96 luminosity-blended
+                : Windows.UI.Color.FromArgb(0x8C, 0xFC, 0xFC, 0xFC)); // ~0.55 ≈ 0.85 luminosity-blended
+            _tint.Brush = _compositor.CreateColorBrush(Windows.UI.Color.FromArgb(dark ? (byte)0x26 : (byte)0x00, 0x2C, 0x2C, 0x2C));
+            _luminosity.IsVisible = _tint.IsVisible = true;
         }
         catch
         {
             // Leave the existing brush; the dock still works.
         }
     }
+
+    private static Windows.UI.Color Rgb(byte r, byte g, byte b) => Windows.UI.Color.FromArgb(0xFF, r, g, b);
 
     public void Show()
     {
@@ -182,6 +209,8 @@ public sealed class AcrylicBackdrop : IDisposable
 
     public void Dispose()
     {
+        _tint?.Dispose();
+        _luminosity?.Dispose();
         _visual?.Dispose();
         _target?.Dispose();
         _compositor?.Dispose();
