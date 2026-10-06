@@ -2201,24 +2201,22 @@ public partial class DockWindow : Window
 
     // --- Minimize → dock tile, and tile click → restore (genie or scale per the setting) ---
 
-    /// <summary>The minimize/restore animator selected by <see cref="MinimizeEffect"/>. Suck and Genie
-    /// share the mesh animator, differing only in its <see cref="GenieAnimator.Style"/> curve.</summary>
+    /// <summary>The minimize/restore animator selected by <see cref="MinimizeEffect"/>: the mesh genie,
+    /// or the image animator in its Scale / Fade style.</summary>
     private IMinimizeAnimator MinimizeAnimator
     {
         get
         {
             var effect = ViewModel?.Settings.MinimizeEffect ?? MinimizeEffect.Genie;
-            double speed = ViewModel?.Settings.EffectSpeed ?? 1.0;
-            if (effect == MinimizeEffect.Scale)
+            double speed = ViewModel?.Settings.MinimizeSpeed ?? 1.0;
+            if (effect == MinimizeEffect.Genie)
             {
-                _scale.SpeedMultiplier = speed;
-                return _scale;
+                _genie.SpeedMultiplier = speed;
+                return _genie;
             }
-            _genie.Style = effect == MinimizeEffect.Genie
-                ? GenieAnimator.GenieStyle.Genie
-                : GenieAnimator.GenieStyle.Suck;
-            _genie.SpeedMultiplier = speed;
-            return _genie;
+            _scale.Style = effect == MinimizeEffect.Scale ? ScaleAnimator.ScaleStyle.Scale : ScaleAnimator.ScaleStyle.Fade;
+            _scale.SpeedMultiplier = speed;
+            return _scale;
         }
     }
 
@@ -2271,13 +2269,34 @@ public partial class DockWindow : Window
         => ViewModel!.FindMinimizedWindow(hwnd) is not null || _iconMinimized.ContainsKey(hwnd);
 
     /// <summary>Drops all dock minimize tracking for a window: its tile (if any), its icon-stashed
-    /// capture, and its captured source rect.</summary>
+    /// capture, and its captured source rect — and hands the window its OS transitions back.</summary>
     private void DropMinimizedTracking(IntPtr hwnd, DockItemViewModel? tile)
     {
         if (tile is not null)
             ViewModel!.RemoveMinimizedWindow(tile);
         _iconMinimized.Remove(hwnd);
         _minimizedSourcePx.Remove(hwnd);
+        ReenableTransitionsSoon(hwnd);
+    }
+
+    /// <summary>
+    /// Transitions are suppressed only while the dock owns a window's minimize: just before it
+    /// minimizes the window (so the OS animation doesn't race the warp), kept while it sits minimized
+    /// (so the restore behind the warp is instant), and given back here once the dock lets go — so the
+    /// window's native maximize/snap/restore animations work normally the rest of the time. Deferred a
+    /// beat: re-enabling in the same tick as SW_RESTORE could let DWM animate that very restore. Skipped
+    /// if the dock has taken the window again in the meantime.
+    /// </summary>
+    private void ReenableTransitionsSoon(IntPtr hwnd)
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (WindowControl.IsWindow(hwnd) && !App.Current.AnyDockHandles(hwnd))
+                WindowControl.SetTransitionsEnabled(hwnd, true);
+        };
+        timer.Start();
     }
 
     /// <summary>Drops the dock representation of every tracked window that is no longer minimized —
@@ -2500,10 +2519,10 @@ public partial class DockWindow : Window
         // to a thumbnail tile (resolved in the deferred step below).
         var appTile = ViewModel.Settings.MinimizeIntoIcon ? ViewModel.FindAppForWindow(hwnd) : null;
 
-        // The minimize-start event reaches us only AFTER the OS has already minimized the window, and
-        // transitions are suppressed, so it vanished instantly (no OS scale animation). Don't restore
-        // it — just paint the captured frame at the window's old spot and warp it into the dock right
-        // away: a single minimize, no restore/re-minimize dance.
+        // The minimize-start event reaches us only AFTER the OS has already minimized the window (its
+        // own animation may have played: transitions are only suppressed just-in-time for minimizes
+        // the dock intercepts). Don't restore it — just paint the captured frame at the window's old
+        // spot and warp it into the dock right away: a single minimize, no restore/re-minimize dance.
         animator.ShowAtSource(bitmap, sourceDip, monitorDip);
 
         // Intercepted gesture: the real window is still up. Frame 0 is now queued to paint over it.
@@ -3216,8 +3235,8 @@ public partial class DockWindow : Window
 
         var minimizeUsing = new MenuItem { Header = Loc.T("Menu_MinimizeUsing") };
         minimizeUsing.Items.Add(MenuChoice("Minimize_Genie", s.MinimizeEffect == MinimizeEffect.Genie, () => PickMinimizeEffect(MinimizeEffect.Genie)));
-        minimizeUsing.Items.Add(MenuChoice("Minimize_Suck", s.MinimizeEffect == MinimizeEffect.Suck, () => PickMinimizeEffect(MinimizeEffect.Suck)));
         minimizeUsing.Items.Add(MenuChoice("Minimize_Scale", s.MinimizeEffect == MinimizeEffect.Scale, () => PickMinimizeEffect(MinimizeEffect.Scale)));
+        minimizeUsing.Items.Add(MenuChoice("Minimize_Fade", s.MinimizeEffect == MinimizeEffect.Fade, () => PickMinimizeEffect(MinimizeEffect.Fade)));
         menu.Items.Add(minimizeUsing);
 
         menu.Items.Add(new Separator());

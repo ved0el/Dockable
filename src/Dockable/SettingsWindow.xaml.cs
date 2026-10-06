@@ -87,11 +87,11 @@ public partial class SettingsWindow : Window
 
         PositionCombo.SelectedIndex = (int)s.Edge;   // DockEdge: Bottom, Left, Right, Top (matches combo order)
         GlassEffectCombo.SelectedIndex = (int)s.GlassEffect; // GlassEffect: Simple, Acrylic, LiquidGlass
-        MinimizeCombo.SelectedIndex = (int)s.MinimizeEffect; // MinimizeEffect: Suck, Scale, Genie
+        MinimizeCombo.SelectedIndex = (int)s.MinimizeEffect; // MinimizeEffect: Genie, Scale, Fade
         HoverEffectCombo.SelectedIndex = (int)s.HoverEffect;       // HoverEffect: Magnify, Zoom, Lift
         HoverAnimationCombo.SelectedIndex = (int)s.HoverAnimation; // HoverAnimation: Smooth, Snappy, Spring
         PerformanceCombo.SelectedIndex = (int)s.PerformanceMode; // PerformanceMode: Auto, Quality, Performance
-        EffectSpeedSlider.Value = SpeedToStep(s.EffectSpeed);
+        EffectSpeedSlider.Value = SpeedToStep(s.MinimizeSpeed);
         OpenAtLoginSwitch.IsChecked = StartupManager.IsEnabled(StartupEntryName);
         IndicatorsSwitch.IsChecked = s.ShowRunningIndicators;
         AnimateOpeningSwitch.IsChecked = s.AnimateOpeningApps;
@@ -154,7 +154,7 @@ public partial class SettingsWindow : Window
         new("DockMenuBar", "Row_HoverEffect", () => RowOf(HoverEffectCombo), "hover effect magnify zoom lift seelen macos animation style"),
         new("DockMenuBar", "Row_HoverAnimation", () => RowOf(HoverAnimationCombo), "hover animation smooth snappy spring bounce elastic curve feel"),
         new("DockMenuBar", "Row_Position", () => RowOf(PositionCombo), "position on screen edge bottom left right side location"),
-        new("DockMenuBar", "Row_MinimizeUsing", () => RowOf(MinimizeCombo), "minimize using genie suck scale warp animation effect"),
+        new("DockMenuBar", "Row_MinimizeUsing", () => RowOf(MinimizeCombo), "minimize using genie scale fade magic lamp warp animation effect restore"),
         new("DockMenuBar", "Label_EffectSpeed", () => RowOf(EffectSpeedSlider), "effect speed slow fast animation duration"),
         new("DockMenuBar", "Toggle_ShowIndicators", () => RowOf(IndicatorsSwitch), "indicators dots running open applications lights"),
         new("DockMenuBar", "Toggle_AnimateOpening", () => RowOf(AnimateOpeningSwitch), "animate opening applications bounce launch attention hop"),
@@ -798,7 +798,7 @@ public partial class SettingsWindow : Window
     {
         if (_initializing)
             return;
-        _vm.Settings.MinimizeEffect = (MinimizeEffect)MinimizeCombo.SelectedIndex; // 0 Suck, 1 Scale, 2 Genie
+        _vm.Settings.MinimizeEffect = (MinimizeEffect)MinimizeCombo.SelectedIndex; // 0 Genie, 1 Scale, 2 Fade
         _vm.Save();
     }
 
@@ -830,9 +830,9 @@ public partial class SettingsWindow : Window
     }
 
     // --- Effect speed ---
-    // The slider snaps to 5 positions: Slow, ·, Regular, ·, Fast. Speed is the animation's
-    // SpeedMultiplier; the scale now tops out at 1x (the base speed) — Slow is very slow (0.01).
-    private static readonly double[] SpeedSteps = { 0.01, 0.25, 0.5, 0.75, 1.0 };
+    // The slider snaps to 5 positions: Slow, ·, Default, ·, Fast — the animation's SpeedMultiplier,
+    // with the middle tick at exactly 1x (each effect's tuned duration).
+    private static readonly double[] SpeedSteps = { 0.6, 0.8, 1.0, 1.25, 1.5 };
 
     private static double StepToSpeed(int step) => SpeedSteps[Math.Clamp(step, 0, SpeedSteps.Length - 1)];
 
@@ -852,7 +852,7 @@ public partial class SettingsWindow : Window
     {
         if (_initializing)
             return;
-        _vm.Settings.EffectSpeed = StepToSpeed((int)Math.Round(e.NewValue));
+        _vm.Settings.MinimizeSpeed = StepToSpeed((int)Math.Round(e.NewValue));
         _vm.Save();
     }
 

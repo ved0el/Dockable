@@ -4,7 +4,7 @@ A macOS-style **Dock for Windows 11**. It sits at the bottom of the screen, mirr
 (pinned + running apps), magnifies icons macOS-style on hover, opens the Start menu, optionally hides
 the Windows taskbar, pins **files and folders with macOS-style stacks** (fan / grid / list views),
 can **auto-hide** like the real Dock, ships an optional macOS-style **menu bar**, and replaces the
-window minimize/restore with a **genie**, **scale**, or **suck** warp into the dock. Fully
+window minimize/restore with a **genie** (magic lamp), **scale**, or **fade** effect into the dock. Fully
 localized — English, Português (Brasil), Español, Уукраїнська, and 中文.
 
 Maintained by **[Leo](https://github.com/ved0el)** · © 2026 Leo. Based on the original
@@ -89,9 +89,9 @@ Maintained by **[Leo](https://github.com/ved0el)** · © 2026 Leo. Based on the 
 - **Win+M minimizes everything one window at a time**, each warping into the dock; **Win+Down**
   minimizes the focused window (and focuses the next one, like Windows does).
 - Three effects, chosen in **Dock Preferences → Minimize windows using**:
-  - **Suck** — a hard, fast mesh funnel to a point.
+  - **Fade** — a short, subtle Windows 11-style shrink-and-fade toward the dock.
   - **Scale** — the window scales down to (and back from) its tile.
-  - **Genie** — a macOS-style 3D mesh warp with a bulging neck.
+  - **Genie** — the macOS "magic lamp": the sides bend toward the icon, then the window pours through the neck.
 - Optionally minimize a window **into its app's dock icon** instead of a separate thumbnail tile
   (Dock Preferences → *Minimize windows into application icon*).
 - **Stays in sync with the rest of Windows:** restoring a window from the taskbar or Alt+Tab clears its
@@ -134,7 +134,7 @@ The window itself (sidebar panels):
   (+ a shortcut to Windows *Startup Apps*), and the **Appearance** Light / Dark / Auto tiles.
 - **Dock & Menu Bar** — **Size** and **Magnification** sliders; **Position on screen**;
   **Glass Effect** (Translucent / Acrylic / Liquid Glass); **Minimize windows using**
-  (Suck / Scale / Genie); **Effect Speed**; toggles for running indicators, open-animation,
+  (Genie / Scale / Fade); **Effect Speed**; toggles for running indicators, open-animation,
   minimize-into-icon, and **Automatically hide and show the Dock**; the **menu bar** toggle; and the
   Windows-taskbar visibility.
 - **Liquid Glass** — power-user tuning for the glass shader (blur, distortion, saturation, …).

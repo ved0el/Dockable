@@ -60,17 +60,23 @@ public enum PerformanceMode
     Performance,
 }
 
-/// <summary>How a window animates as it minimizes into / restores from the dock.</summary>
+/// <summary>How a window animates as it minimizes into / restores from the dock. Persisted by NAME
+/// (JsonStringEnumConverter), so members can be reordered but never removed; the first three are the
+/// Preferences combo / dock menu order.</summary>
 public enum MinimizeEffect
 {
-    /// <summary>A hard, fast mesh funnel to a point — like paper sucked into a vacuum.</summary>
-    Suck,
+    /// <summary>macOS "magic lamp": the sides bend toward the icon, then the window slides through the
+    /// neck into it (and back out on restore).</summary>
+    Genie,
 
-    /// <summary>Simple scale-down to the dock tile (and reverse on restore).</summary>
+    /// <summary>macOS Scale: the window shrinks straight into its icon.</summary>
     Scale,
 
-    /// <summary>A mesh warp with a bulging neck — like smoke flowing into / out of a bottle.</summary>
-    Genie,
+    /// <summary>Windows 11-style: a short, subtle shrink toward the dock that fades out.</summary>
+    Fade,
+
+    /// <summary>Legacy (the old vacuum funnel); migrated to <see cref="Fade"/> at load.</summary>
+    Suck,
 }
 
 /// <summary>How dock icons react to the cursor hovering over them.</summary>
@@ -152,9 +158,13 @@ public sealed class DockSettings
     /// <summary>Window minimize/restore animation style.</summary>
     public MinimizeEffect MinimizeEffect { get; set; } = MinimizeEffect.Genie;
 
-    /// <summary>Speed multiplier for the minimize/restore effect. The Preferences slider snaps to
-    /// Slow (0.01) … Default (0.5) … Fast (1.0); 0.5 is the middle "Default" tick.</summary>
+    /// <summary>Legacy (an old speed scale whose "Default" doubled every duration); unused — superseded
+    /// by <see cref="MinimizeSpeed"/>, so existing users land on the new default.</summary>
     public double EffectSpeed { get; set; } = 0.5;
+
+    /// <summary>Minimize/restore speed multiplier: &gt;1 faster, &lt;1 slower. The Preferences slider
+    /// snaps to 0.6 / 0.8 / 1.0 (Default) / 1.25 / 1.5.</summary>
+    public double MinimizeSpeed { get; set; } = 1.0;
 
     /// <summary>Base (un-magnified) icon size in DIPs.</summary>
     public double IconSize { get; set; } = 48;

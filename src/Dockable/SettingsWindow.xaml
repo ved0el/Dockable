@@ -759,9 +759,9 @@
                                 <ComboBox x:Name="MinimizeCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
                                           AutomationProperties.Name="{loc:Loc Row_MinimizeUsing}"
                                           VerticalAlignment="Center" SelectionChanged="MinimizeCombo_SelectionChanged">
-                                    <ComboBoxItem Content="{loc:Loc Minimize_Suck}" />
-                                    <ComboBoxItem Content="{loc:Loc Minimize_Scale}" />
                                     <ComboBoxItem Content="{loc:Loc Minimize_Genie}" />
+                                    <ComboBoxItem Content="{loc:Loc Minimize_Scale}" />
+                                    <ComboBoxItem Content="{loc:Loc Minimize_Fade}" />
                                 </ComboBox>
                             </Grid>
 

@@ -3,7 +3,7 @@
 A macOS-style **Dock for Windows 11**: a bottom bar that mirrors the taskbar (pinned + running
 apps), magnifies icons on hover, opens the Start menu, auto-hides the real taskbar, supports
 Light/Dark/Auto theming + a translucent/acrylic/liquid-glass bar + a Dock Preferences window,
-replaces the window minimize/restore with a "suck", "scale", or "genie" warp into the dock, and is
+replaces the window minimize/restore with a "genie" (magic lamp), "scale", or "fade" effect into the dock, and is
 **fully localized** (English, pt-BR, es, uk, zh-Hans). This file is the standing guide for any coding-agent
 session here (Claude Code, Codex, Cursor, …) — read it first; it captures everything not obvious from the code.
 
@@ -172,12 +172,12 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
   along each docked edge, published by `DockWindow.RefreshRaiseZones` from `App.SyncDockMonitors`) +
   `CursorEnteredRaiseZone` → `App.KeepDocksOnTop`. A PiP player / tiling WM shares the topmost band, so
   last-raiser wins and the 1 s `KeepOnTop` backstop alone could leave the dock buried when a click lands.
-- **Genie/OverlayAnimatorBase** — owns the velocity curve: `Emphasized` (front-loaded, zero velocity at
-  both ends) is applied to PROGRESS and then mirrored for a restore, never the other way round
-  (mirroring an eased value inverts the curve, so a restore would arrive at a hard stop). Restores run
-  `RestoreDurationFactor` (1.15×) longer. Subclasses SHAPE the eased warp (the genie's per-row stagger)
-  and must not re-ease it. `GenieAnimator.RefreshQuality` tears the overlay down so the next play
-  rebuilds the mesh.
+- **Genie/OverlayAnimatorBase** — owns the velocity curve: `Curve` (default `Emphasized`: front-loaded,
+  zero velocity at both ends) is applied to PROGRESS and then mirrored for a restore, never the other
+  way round (mirroring an eased value inverts the curve, so a restore would arrive at a hard stop).
+  Restores run `RestoreDurationFactor` (1.1×) longer. Subclasses SHAPE the warp and must not re-ease it;
+  the genie overrides `Curve` to identity because its bend/slide phases carry their own easing.
+  `GenieAnimator.RefreshQuality` tears the overlay down so the next play rebuilds the mesh.
 
 ---
 
@@ -229,8 +229,8 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
 | `Language` | null | UI culture code (`en`/`pt-BR`/`es`/`uk`/`zh-Hans`). null = resolve from OS → en, then persist. |
 | `Theme` | `System` | `DockTheme` (System/Light/Dark; "System" shown as "Auto"). |
 | `GlassEffect` | `LiquidGlass` | `GlassEffect` bar background: Simple (translucent) / Acrylic / LiquidGlass. |
-| `MinimizeEffect` | `Genie` | `MinimizeEffect`: Suck / Scale / Genie. |
-| `EffectSpeed` | 1.0 | Minimize/restore speed multiplier (>1 faster, <1 slower). |
+| `MinimizeEffect` | `Genie` | `MinimizeEffect`: Genie (magic lamp) / Scale / Fade. Stored by name; legacy `Suck` → `Fade` at load. |
+| `MinimizeSpeed` | 1.0 | Minimize/restore speed multiplier (>1 faster, <1 slower); slider 0.6/0.8/1.0/1.25/1.5. (`EffectSpeed` is legacy, unused.) |
 | `IconSize` | 48 | Base icon cell size (DIP). |
 | `MaxIconSize` | 96 | Max magnified size. |
 | `MagnificationRadius` | 160 | Cursor influence radius (DIP). |
@@ -502,12 +502,14 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
 - **Restore-all on exit:** `RestoreAllMinimized` (first thing in `OnClosed`) un-minimizes every
   dock-minimized window (`RestoreNoForeground`) and re-enables the transitions we suppressed, so the
   user isn't left with windows stranded behind a gone dock. (A hard force-kill skips it.)
-- **Three effects**, chosen by `DockSettings.MinimizeEffect` (`Suck`/`Scale`/`Genie`, set via the
-  settings window's "Minimize windows using" combo). `DockWindow.MinimizeAnimator` maps them to two
-  pre-warmed `IMinimizeAnimator`s: **Scale** → `ScaleAnimator` (capture scales down/translates to the
-  tile); **Suck** and **Genie** → `GenieAnimator` (a 3D mesh warp) with its `Style` set to the
-  hard-funnel (Suck) or staggered-flow (Genie) curve. `EffectSpeed` is applied as the animator's
-  `SpeedMultiplier`. Both overlays are pre-warmed at startup. Optionally, `MinimizeIntoIcon` makes a
+- **Three effects**, chosen by `DockSettings.MinimizeEffect` (`Genie`/`Scale`/`Fade`; combo + dock
+  menu in that order; the legacy `Suck` name still parses and is migrated to `Fade` in `Load`).
+  `DockWindow.MinimizeAnimator` maps them to two pre-warmed `IMinimizeAnimator`s: **Genie** →
+  `GenieAnimator` (3D mesh magic lamp, 650 ms); **Scale** / **Fade** → `ScaleAnimator` with its
+  `Style`: Scale shrinks the capture icon-sized onto the icon centre (320 ms), Fade (Windows 11-like)
+  shrinks to 0.82 while drifting 30% toward the icon and fading out (240 ms). Durations are at 1×;
+  `MinimizeSpeed` (0.6–1.5, Default 1.0) is the animator's `SpeedMultiplier`. The old `EffectSpeed`
+  (whose "Default" 0.5 doubled every duration) is legacy/unused. Optionally, `MinimizeIntoIcon` makes a
   window minimize into its app's dock icon instead of a separate thumbnail tile (falls back to a tile
   when the app has no dock icon).
 - **Capture timing is the crux:** capturing at minimize is too late (window already minimized →
@@ -523,9 +525,14 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
   captured (extended-frame) rect — `DockWindow` stashes it in `_minimizedSourcePx` at minimize and
   reuses it instead of `GetWindowPlacement`'s `rcNormalPosition` (which is larger by the invisible
   border, and would make the window look enlarged just before it lands).
-- **OS animation suppression:** the cache disables `DWMWA_TRANSITIONS_FORCEDISABLED` on the current
-  foreground window (re-enabling the previous) so minimize is instant and the genie doesn't race the
-  OS shrink. Side effect: the focused window's maximize/snap are also instant while focused.
+- **OS animation suppression is just-in-time (user's choice):** `DWMWA_TRANSITIONS_FORCEDISABLED` is set
+  only while the dock owns a window's minimize — by `MinimizeToDock` BEFORE it minimizes the window
+  (intercepted gestures: no OS shrink racing the warp), kept while the window sits minimized (the
+  restore behind the reverse warp is instant), and handed back by `DropMinimizedTracking` →
+  `ReenableTransitionsSoon` (300 ms later, skipped if a dock has re-taken the window). The thumbnail
+  cache no longer touches transitions, so every window keeps its native maximize/snap/restore
+  animations. Accepted trade-off: minimizes the dock can't intercept (Alt+Space menu, unrecognised
+  custom caption buttons, programmatic) play the OS animation before the warp.
 - `Genie/GenieAnimator` is a **pre-warmed, reused** overlay (one click-through, topmost,
   transparent WPF window resized to the active monitor per play; shown via Visibility) — building a
   fresh WPF+3D window per minimize cost 10s–100s ms and was the visible "blink". It maps the capture
@@ -547,17 +554,19 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
   free (it emerges from the dock). **Every frame-painting path must go through `ApplyFrameAndFade`** —
   a play that ended faded out would otherwise leave the next `ShowAtSource` invisible, and that frame
   is what covers the real window while it minimizes behind it.
-- **A NECK, not a cone** — the shape trap this warp keeps falling into. `rowWidth` interpolating on
-  the same eased progress as the descent makes the whole path taper evenly, which reads as a pointed
-  funnel no matter what end width you pick. `WidthPinchPower` (2.5) raises the width's parameter
-  (`wE = e^2.5`) so the body keeps nearly its full width for most of the travel and pinches only in
-  the last stretch, at the dock — the Dock's short neck under a full-width body. The sideways slide
-  (`rowCenterX`) deliberately stays on plain `e`. Neck width is `NeckWidthFactor` 0.85 of the tile
-  (floor 10 DIP): about the icon's own width, since the Dock swallows the sheet into something
-  icon-sized rather than converging to a tip. `TileWidthOf` also feeds **ScaleAnimator**, where its note
-  still matters: a just-added tile is still growing its slot in (AppearScale ≈ 0), so
-  its live RenderWidth reads ~2 DIP at play time — `TileWidthOf` divides by AppearScale mid-grow to
-  project the settled width.
+- **The genie is a MAGIC LAMP: width is a function of screen position, not of a row's progress.**
+  `GenieAnimator` builds one fixed S-curve per side (`SmoothStep(depth / D)`, from the window's edges
+  to a neck `NeckWidthFactor` 0.7 × icon wide at the landing line) and runs two overlapping phases on
+  LINEAR warp (it overrides `Curve` to identity and eases each phase itself): **bend** (warp 0→0.45,
+  smootherstep) fades the curve in with rows in place; **slide** (0.2→1, `2.2t²−1.2t³`: from rest, still moving into the icon) moves every row
+  toward the dock by up to `D` and reads its width off the curve where it NOW is — rows past the neck
+  are packed into a band that ends at the icon's CENTRE (landing lift + half the icon; the genie mirrors `LandingLiftDip`) and keep tapering to `TailWidthFactor` 0.6 × the neck (~0.42 icon) — it ends in the icon, not at a point — then the base dissolves it.
+  Depth is measured from the window's far edge, so a top dock works too; `D` has a floor of 0.35 × the
+  window height for windows that already reach past the landing line. The old per-row-progress
+  stagger (which needed a `WidthPinchPower` hack to avoid reading as a cone) is gone — don't bring it
+  back. `TileWidthOf` feeds both animators: a just-added tile is still growing its slot in
+  (AppearScale ≈ 0), so its live RenderWidth reads ~2 DIP at play time — `TileWidthOf` divides by
+  AppearScale mid-grow to project the settled width.
 - Orchestration in `DockWindow` (`InterceptedMinimize`/`MinimizeOneAnimated`/`MinimizeToDock` for
   minimize; `OnWindowMinimizing` reactive fallback; `RestoreMinimized`/`RestoreWindowAnimated` for
   restore); `_busy` set guards re-entrancy. Rough edges: minimizes that fall through to the reactive
@@ -690,7 +699,7 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
 - **The dock's empty-space / separator menu** (`BuildSeparatorMenu`) is macOS's Dock menu: Task
   Manager | sep | Turn Hiding On/Off (`AutoHideDock`), Turn Magnification On/Off (re-enabling bumps
   a stale `MaxIconSize` to 2× so "on" is never a no-op), Position on Screen ▶ Left/Bottom/Right
-  (checkmarked), Minimize Using ▶ Genie/Suck/Scale (checkmarked) | sep | Preferences, About | sep |
+  (checkmarked), Minimize Using ▶ Genie/Scale/Fade (checkmarked) | sep | Preferences, About | sep |
   Quit. Picks sync an open Preferences window via `SettingsWindow.SyncFromSettings()`. The menu
   bar's empty-space right-click shows the four-item variant (Task Manager/Prefs/About/Quit).
 

@@ -8,92 +8,78 @@ using Dockable.Interop;
 namespace Dockable.Genie;
 
 /// <summary>
-/// Plays a macOS-style "genie" warp: a captured window image mapped onto a fine grid mesh
-/// that flows and pinches into the dock target over a short duration. Rendered with WPF 3D
-/// (Viewport3D + animated MeshGeometry3D). The pre-warmed, reusable, click-through overlay and
-/// the render loop live in <see cref="OverlayAnimatorBase"/>.
-///
-/// Coordinates are device-independent (DIP); rects are in virtual-screen DIPs.
+/// Plays the macOS "genie" (a.k.a. magic lamp — the same algorithm KDE's Magic Lamp uses): a captured
+/// window image on a grid mesh whose SIDES follow fixed S-curves from the window's edges down to a neck
+/// the width of the dock icon. Two overlapping phases:
+/// <list type="number">
+/// <item><b>Bend</b> — rows stay put while the S-curve fades in, so the edge nearest the dock bows in
+/// toward the icon.</item>
+/// <item><b>Slide</b> — the whole sheet travels along the curve toward the dock; every row's width is
+/// read off the curve at the row's CURRENT position, so the shape stays a stable lamp while the content
+/// pours through the neck and is pressed into a short band inside the icon.</item>
+/// </list>
+/// A restore plays the same frames backwards (slide out, then un-bend). Width as a function of screen
+/// position — not of each row's own progress — is what makes it read as the Dock rather than a cone.
+/// Rendered with WPF 3D (Viewport3D + MeshGeometry3D); the pre-warmed, reusable, click-through overlay
+/// and the render loop live in <see cref="OverlayAnimatorBase"/>. Coordinates are DIP.
 /// </summary>
 public sealed class GenieAnimator : OverlayAnimatorBase
 {
-    // Mesh resolution. Finer horizontally so the Suck black-hole spiral stays smooth; resolved from
-    // PerformanceProfile at overlay-build time (coarser when reduced → less per-frame GPU buffer upload).
+    // Mesh resolution, resolved from PerformanceProfile at overlay-build time (coarser when reduced).
+    // Rows carry the curve; columns only need to keep the texture mapping smooth.
     private int Columns = 12;
     private int Rows = 48;
 
-    /// <summary>Which curve the mesh warp uses; both share the engine, differing only in shaping.</summary>
-    public enum GenieStyle { Suck, Genie }
+    // --- Tunables (blind constants; adjust by feel) ---
 
-    /// <summary>Per-style curve parameters.</summary>
-    /// <param name="Stagger">How far the leading rows run ahead of the trailing ones. This IS the
-    /// genie: at 1.2 the bottom row has been swallowed by the tile while the top row hasn't moved
-    /// yet, so the sheet is strung out along the path and pulls through a neck anchored at the dock.
-    /// Low values make every row shrink in unison — a rectangle that just narrows and drops.</param>
-    /// <param name="Duration">Animation length in ms (before EffectSpeed).</param>
-    private readonly record struct StyleParams(double Stagger, double Duration);
+    /// <summary>Nominal length (ms) at speed 1× (tuned by feel: 520 read as rushed).</summary>
+    private const double DurationMs = 650;
 
-    private static StyleParams ParamsFor(GenieStyle style) => style switch
-    {
-        // Smoke into a bottle: heavy stagger, and a row's width tracks its own position along the path,
-        // so it reaches the tile width exactly AT the tile — the neck stays anchored to the dock.
-        GenieStyle.Genie => new StyleParams(Stagger: 1.2, Duration: 820),
-        // Black hole: every point is dragged straight toward the target, nearest points first — so the
-        // window stretches and collapses into the spot. Stagger = how strongly nearer points lead.
-        _ => new StyleParams(Stagger: 0.95, Duration: 300),
-    };
+    /// <summary>The bend phase runs over warp [0, BendEnd]; the slide over [SlideStart, 1]. The overlap
+    /// keeps the motion continuous — the sheet starts travelling while it is still curling in.</summary>
+    private const double BendEnd = 0.45;
+    private const double SlideStart = 0.2;
 
-    /// <summary>Neck width at full warp, as a fraction of the landing tile's width (with a floor in
-    /// DIP). Roughly the icon's own width, like the Dock: the sheet is swallowed by something the size
-    /// of the icon, it does not converge to a tip.</summary>
-    private const double NeckWidthFactor = 0.85;
-    private const double NeckWidthFloor = 10;
+    /// <summary>Neck width at the landing line (just above the icon's top edge), as a fraction of the
+    /// icon's width (floor in DIP): a stream a little narrower than the icon pouring into it.</summary>
+    private const double NeckWidthFactor = 0.7;
+    private const double NeckWidthFloor = 8;
 
-    /// <summary>How late the width collapse happens relative to the row's descent (exponent on the
-    /// eased local progress). THIS is what separates a neck from a cone: at 1.0 the width shrinks in
-    /// lockstep with the drop, so the whole path tapers evenly and reads as a pointed funnel. Above 1
-    /// the body keeps nearly its full width for most of the travel and pinches only in the last
-    /// stretch, right at the dock — the Dock's short, near-parallel neck under a full-width body.</summary>
-    private const double WidthPinchPower = 2.5;
+    /// <summary>Past the neck the stream sinks to the icon's CENTRE (it ends in the icon, not at a
+    /// point), still narrowing to <see cref="TailWidthFactor"/> of the neck (~0.42 icon) there, then
+    /// dissolves (FadeStartWarp).</summary>
+    private const double TailWidthFactor = 0.6;
 
-    /// <summary>Which curve to warp with; set before each play (defaults to the Suck funnel).</summary>
-    public GenieStyle Style { get; set; } = GenieStyle.Suck;
+    /// <summary>The landing line sits this far above the icon's top edge — mirrors DockWindow's
+    /// LandingLiftDip, so the band below can end exactly at the icon's centre.</summary>
+    private const double LandingLiftDip = 6;
 
     private MeshGeometry3D? _mesh;
     private Point3DCollection? _positions; // == _mesh.Positions; detached while bulk-mutated each frame
     private ImageBrush? _brush;
     private OrthographicCamera? _camera;
 
-    // Per-play precomputed invariants (depend only on Src/Target/_leadFromTop, fixed across a play's
-    // frames): source vertex coords, the black-hole fall-in lag, and the genie per-row lead/origin-Y.
-    // Recomputing these (esp. the per-vertex sqrt distance) every frame was pure waste.
-    private int _vertexCount;
-    private double[]? _ox, _oy;          // source vertex positions (overlay-local DIP)
-    private double[]? _lag;              // black-hole normalized distance-to-target (0 near … 1 far)
-    private double[]? _leadRow;          // genie per-row flow lead (0 = leads, 1 = trails)
-    private double[]? _origYRow;         // genie per-row source Y
+    // Per-play invariants (recomputed by PreparePlay — which runs twice on the intercepted path, once
+    // with ShowAtSource's placeholder target and again from AnimateTo; both are complete recomputes).
+    private bool _down;        // the dock is beyond the window's bottom (screen-down) vs its top
+    private double _depthD;    // distance from the window's far edge to the landing line (the neck)
+    private double _bandH;     // depth of the final band inside the icon
+    private double _neckL, _neckR;
+    private double[]? _rowDepth; // each row's starting depth from the far edge
 
-    // Which window edge leads the warp: the edge nearest the dock tile. Top-anchored docks lead from
-    // the top (flow downward→up into the tile); bottom-anchored docks lead from the bottom.
-    private bool _leadFromTop;
-    private StyleParams _params = ParamsFor(GenieStyle.Suck); // resolved at the start of each play
+    protected override double BaseDurationMs => DurationMs;
 
-    protected override double BaseDurationMs => _params.Duration;
+    protected override string ProfileName => "Genie";
 
-    protected override string ProfileName => Style.ToString();
+    // The bend/slide phases carry their own easing (below); a second curve on top would compound.
+    protected override double Curve(double progress) => progress;
 
     protected override UIElement BuildOverlayContent()
     {
         (Columns, Rows) = PerformanceProfile.GenieMesh;
         _mesh = BuildMesh();
         _positions = _mesh.Positions; // held so we can detach/reattach it cheaply each frame
-
-        _vertexCount = (Columns + 1) * (Rows + 1);
-        _ox = new double[_vertexCount];
-        _oy = new double[_vertexCount];
-        _lag = new double[_vertexCount];
-        _leadRow = new double[Rows + 1];
-        _origYRow = new double[Rows + 1];
+        _rowDepth = new double[Rows + 1];
 
         _brush = new ImageBrush { Stretch = Stretch.Fill };
         var model = new GeometryModel3D(_mesh, new DiffuseMaterial(_brush));
@@ -142,9 +128,8 @@ public sealed class GenieAnimator : OverlayAnimatorBase
             double v = (double)j / Rows;
             for (int i = 0; i <= Columns; i++)
             {
-                double u = (double)i / Columns;
                 mesh.Positions.Add(new Point3D(0, 0, 0)); // filled in by ApplyFrame
-                mesh.TextureCoordinates.Add(new Point(u, v));
+                mesh.TextureCoordinates.Add(new Point((double)i / Columns, v));
             }
         }
 
@@ -171,131 +156,85 @@ public sealed class GenieAnimator : OverlayAnimatorBase
         return mesh;
     }
 
-    /// <summary>
-    /// Resolves the per-play style/lead, then precomputes everything that stays fixed for the whole
-    /// play (source vertex coords, the black-hole fall-in lag with its per-vertex distance, and the
-    /// genie per-row lead/origin) so the per-frame <see cref="ApplyFrame"/> only does the cheap warp
-    /// interpolation — no <c>sqrt</c> per vertex per frame. The base calls this once Src/Target are
-    /// final. (At warp 0 every vertex maps to its source position regardless of the lead, so
-    /// recomputing the lead for ShowAtSource's frame 0 is inert.)
-    /// </summary>
+    /// <summary>Resolves direction, the neck line and width, and each row's starting depth. Depth is
+    /// measured from the window's FAR edge toward the dock, so one code path serves a dock below or
+    /// above the window.</summary>
     protected override void PreparePlay()
     {
-        _params = ParamsFor(Style);
-        _leadFromTop = LeadsFromTop();
-
         var src = Src;
-        double tx = Target.X, ty = Target.Y;
-        int rowStride = Columns + 1;
+        double h = Math.Max(src.Height, 1);
+        _down = Target.Y >= src.Top + src.Height / 2;
+        double depth = _down ? Target.Y - src.Top : src.Bottom - Target.Y;
+        // A window whose near edge already reaches past the landing line (a maximized window against
+        // the dock, an auto-hidden dock) would put the neck inside it; keep a sane minimum so the curve
+        // never degenerates (and nothing divides by ~0).
+        _depthD = Math.Max(depth, Math.Max(h * 0.35, 1));
+        _bandH = Math.Max(4, LandingLiftDip + TargetTileWidth / 2); // landing line → icon centre
+
+        double half = Math.Max(NeckWidthFloor, TargetTileWidth * NeckWidthFactor) / 2;
+        _neckL = Target.X - half;
+        _neckR = Target.X + half;
 
         for (int j = 0; j <= Rows; j++)
         {
             double v = (double)j / Rows;
-            double rowY = src.Top + v * src.Height;
-            _origYRow![j] = rowY;
-            // The edge nearest the dock leads the flow: top rows (v=0) for a top-anchored dock, bottom
-            // rows (v=1) otherwise.
-            _leadRow![j] = _leadFromTop ? v : 1 - v;
-            for (int i = 0; i <= Columns; i++)
-            {
-                int idx = j * rowStride + i;
-                _ox![idx] = src.Left + (double)i / Columns * src.Width;
-                _oy![idx] = rowY;
-            }
+            _rowDepth![j] = (_down ? v : 1 - v) * h;
         }
-
-        // Black-hole fall-in lag: normalized distance to the target (0 at the target … 1 at the farthest
-        // corner), so the vertices nearest the target arrive first. Constant across the play's frames.
-        double maxDist = 1e-3;
-        maxDist = Math.Max(maxDist, Distance(src.Left - tx, src.Top - ty));
-        maxDist = Math.Max(maxDist, Distance(src.Right - tx, src.Top - ty));
-        maxDist = Math.Max(maxDist, Distance(src.Left - tx, src.Bottom - ty));
-        maxDist = Math.Max(maxDist, Distance(src.Right - tx, src.Bottom - ty));
-        double invMax = 1.0 / maxDist;
-        for (int idx = 0; idx < _vertexCount; idx++)
-            _lag![idx] = Clamp01(Distance(_ox![idx] - tx, _oy![idx] - ty) * invMax);
     }
 
-    /// <summary>Recomputes vertex positions for a given warp amount, per the active style (the genie
-    /// eases per-vertex inside, so the base's raw warp is exactly what these curves expect).</summary>
     protected override void ApplyFrame(double warp)
-    {
-        if (Style == GenieStyle.Suck)
-            UpdateMeshBlackHole(warp);
-        else
-            UpdateMeshGenie(warp);
-    }
-
-    /// <summary>
-    /// Black-hole collapse: every vertex is pulled straight toward the target, with the vertices nearest
-    /// the target arriving first (so the window stretches and collapses into the point — gravity, not a
-    /// uniform funnel). At full warp everything reaches the target (the thumbnail's spot).
-    /// </summary>
-    private void UpdateMeshBlackHole(double warp)
-    {
-        var mesh = _mesh!;
-        var positions = _positions!;
-        double tx = Target.X, ty = Target.Y, h = MonitorHeight;
-        double stagger = _params.Stagger;
-        double baseProgress = warp * (1 + stagger);
-
-        // Detach the collection so the 637 element writes don't each propagate a change notification up
-        // to the mesh; reattach once at the end for a single re-realization of the vertex buffer.
-        mesh.Positions = null;
-        for (int idx = 0; idx < _vertexCount; idx++)
-        {
-            double e = SmoothStep(Clamp01(baseProgress - _lag![idx] * stagger));
-            double x = Lerp(_ox![idx], tx, e); // straight pull toward the thumbnail's spot
-            double y = Lerp(_oy![idx], ty, e);
-            positions[idx] = new Point3D(x, h - y, 0);
-        }
-        mesh.Positions = positions;
-    }
-
-    /// <summary>
-    /// Genie funnel: rows flow in a heavy stagger, each one narrowing toward the tile in step with its
-    /// own descent — so width is a function of where the row IS, and the pinch sits at the dock while
-    /// the body above it stays full width. That correlation is the neck; the stagger is the flow.
-    /// </summary>
-    private void UpdateMeshGenie(double warp)
     {
         var mesh = _mesh!;
         var positions = _positions!;
         var src = Src;
-        var target = Target;
-        double stagger = _params.Stagger;
-        double srcCenterX = src.Left + src.Width / 2;
-        int rowStride = Columns + 1;
-        double neckWidth = Math.Max(NeckWidthFloor, TargetTileWidth * NeckWidthFactor);
-        double h = MonitorHeight;
-        double baseProgress = warp * (1 + stagger);
+        double h = Math.Max(src.Height, 1);
+        double D = _depthD;
 
-        mesh.Positions = null; // detach for cheap bulk mutation (see UpdateMeshBlackHole)
+        double bend = SmootherStep(Clamp01(warp / BendEnd));
+        // Slide: starts from rest but is still moving when the tail hits the icon (velocity 0.8 at the
+        // end) — the Dock pulls the window IN, it doesn't ease it to a stop. Restores mirror this, so
+        // the window leaves the icon briskly and settles at its frame.
+        double ts = Clamp01((warp - SlideStart) / (1 - SlideStart));
+        double slide = ts * ts * (2.2 - 1.2 * ts);
+        double travel = slide * D;                      // the far edge reaches the neck at slide = 1
+        double squeeze = Lerp(1.0, _bandH / h, slide);  // past the neck, rows pack into the icon band
+        int rowStride = Columns + 1;
+        double mh = MonitorHeight;
+
+        mesh.Positions = null; // detach for cheap bulk mutation; reattach once below
         for (int j = 0; j <= Rows; j++)
         {
-            double e = SmoothStep(Clamp01(baseProgress - _leadRow![j] * stagger));
-            // Width collapses LATER than the descent (see WidthPinchPower) so the neck is short and
-            // sits at the dock, instead of the whole path tapering into a cone.
-            double wE = Math.Pow(e, WidthPinchPower);
-            double rowCenterX = Lerp(srcCenterX, target.X, e); // the sideways slide still tracks the descent
-            double rowWidth = Lerp(src.Width, neckWidth, wE);
-            // 3D Y is up; screen Y is down — flip into the orthographic camera's space.
-            double yUp = h - Lerp(_origYRow![j], target.Y, e);
-
-            int rowBase = j * rowStride;
-            for (int i = 0; i <= Columns; i++)
+            double d = _rowDepth![j] + travel;
+            double left, right;
+            if (d >= D)
             {
-                double x = rowCenterX + ((double)i / Columns - 0.5) * rowWidth;
-                positions[rowBase + i] = new Point3D(x, yUp, 0);
+                d = D + (d - D) * squeeze;
+                // Inside the icon the stream keeps narrowing toward a thin tail.
+                double taper = Lerp(1.0, TailWidthFactor, SmoothStep(Clamp01((d - D) / _bandH)));
+                left = Lerp(Target.X, _neckL, taper);
+                right = Lerp(Target.X, _neckR, taper);
             }
+            else
+            {
+                double k = SmoothStep(d / D); // the lamp's S-curve: full width far away, neck at the dock
+                left = Lerp(src.Left, _neckL, k);
+                right = Lerp(src.Right, _neckR, k);
+            }
+            // The curve fades in during the bend; at warp 0 every row is exactly its source span.
+            left = Lerp(src.Left, left, bend);
+            right = Lerp(src.Right, right, bend);
+
+            double y = _down ? src.Top + d : src.Bottom - d;
+            double yUp = mh - y; // 3D Y is up; screen Y is down — flip into the camera's space
+            int rowBase = j * rowStride;
+            double span = right - left;
+            for (int i = 0; i <= Columns; i++)
+                positions[rowBase + i] = new Point3D(left + span * i / Columns, yUp, 0);
         }
         mesh.Positions = positions;
     }
 
-    /// <summary>The tile is above the window's center → the dock is on the top edge, so lead from the top.</summary>
-    private bool LeadsFromTop() => Target.Y < Src.Top + Src.Height / 2;
-
+    private static double SmootherStep(double t) => t * t * t * (t * (6 * t - 15) + 10);
     private static double Clamp01(double t) => t < 0 ? 0 : t > 1 ? 1 : t;
     private static double Lerp(double a, double b, double t) => a + (b - a) * t;
-    private static double Distance(double dx, double dy) => Math.Sqrt(dx * dx + dy * dy);
 }

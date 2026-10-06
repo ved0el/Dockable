@@ -29,9 +29,6 @@ public sealed class WindowThumbnailCache : IDisposable
     private readonly DispatcherTimer _timer;
     private readonly DispatcherTimer _settleTimer;
     private readonly uint _ownProcessId;
-    // The one window whose OS transitions we've disabled (so its minimize is instant and the
-    // genie isn't racing the OS animation). Only the current foreground window is affected.
-    private IntPtr _suppressedForeground;
 
     public WindowThumbnailCache()
     {
@@ -70,11 +67,9 @@ public sealed class WindowThumbnailCache : IDisposable
 
     private void OnForeground(HWND hwnd, uint @event)
     {
-        // Suppress OS transitions immediately so even a quick minimize is instant. Capture is
-        // deferred (debounced) so the window has time to settle on top first.
-        if (WindowFilter.IsEligibleAppWindow(hwnd, _ownProcessId))
-            SuppressForegroundTransitions((IntPtr)hwnd);
-
+        // Capture is deferred (debounced) so the window has time to settle on top first. (OS
+        // transitions are NOT touched here any more: the dock suppresses them just-in-time around its
+        // own minimizes, so the focused window keeps the native maximize/snap animations.)
         _settleTimer.Stop();
         _settleTimer.Start();
     }
@@ -91,27 +86,11 @@ public sealed class WindowThumbnailCache : IDisposable
         if (!WindowFilter.IsEligibleAppWindow(hwnd, _ownProcessId))
             return;
 
-        SuppressForegroundTransitions((IntPtr)hwnd);
-
         var result = WindowCapture.Capture((IntPtr)hwnd);
         if (result is not null)
             Store((IntPtr)hwnd, result.Value);
     }
 
-    /// <summary>
-    /// Disables OS transitions on the current foreground window (so its eventual minimize is
-    /// instant and the genie replaces it seamlessly), re-enabling them on the previous one so
-    /// only the active window is ever affected.
-    /// </summary>
-    private void SuppressForegroundTransitions(IntPtr hwnd)
-    {
-        if (hwnd == _suppressedForeground)
-            return;
-        if (_suppressedForeground != IntPtr.Zero && WindowControl.IsWindow(_suppressedForeground))
-            WindowControl.SetTransitionsEnabled(_suppressedForeground, true);
-        WindowControl.SetTransitionsEnabled(hwnd, false);
-        _suppressedForeground = hwnd;
-    }
 
     private void Store(IntPtr hwnd, WindowCapture.Result result)
     {
@@ -132,10 +111,7 @@ public sealed class WindowThumbnailCache : IDisposable
     {
         _timer.Stop();
         _settleTimer.Stop();
-        // Restore OS transitions on the window we suppressed.
-        if (_suppressedForeground != IntPtr.Zero && WindowControl.IsWindow(_suppressedForeground))
-            WindowControl.SetTransitionsEnabled(_suppressedForeground, true);
-        _suppressedForeground = IntPtr.Zero;
+
         _hook.Dispose();
     }
 }

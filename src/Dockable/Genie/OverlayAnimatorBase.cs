@@ -25,8 +25,8 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
 
     /// <summary>Restores run this much longer than minimizes. Both motion systems give an entrance
     /// more time than the matching exit: the thing arriving is what the eye follows, while the thing
-    /// leaving has already been dismissed.</summary>
-    private const double RestoreDurationFactor = 1.15;
+    /// leaving has already been dismissed. Kept small — a restore the user is waiting on must not drag.</summary>
+    private const double RestoreDurationFactor = 1.1;
 
     /// <summary>Warp at which the overlay starts fading out (and, mirrored, the point a restore has
     /// faded in by). Every effect ends with all of its geometry collapsed onto one landing point, so
@@ -75,10 +75,14 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
     protected abstract void PreparePlay();
 
     /// <summary>Renders one frame at warp <paramref name="warp"/> in [0,1] (0 = at source, 1 = at
-    /// the tile), already carrying the <see cref="Emphasized"/> velocity curve. Subclasses SHAPE the
-    /// warp (the genie's per-row stagger), they don't re-ease it — easing an eased value compounds
-    /// the curve.</summary>
+    /// the tile), already carrying <see cref="Curve"/>. Subclasses SHAPE the warp (the genie's
+    /// phases), they don't re-ease it — easing an eased value compounds the curve.</summary>
     protected abstract void ApplyFrame(double warp);
+
+    /// <summary>The velocity curve applied to linear PROGRESS before <see cref="ApplyFrame"/> (and then
+    /// mirrored for a restore). <see cref="Emphasized"/> by default; an effect with its own internal
+    /// phase timing (the genie) returns progress unchanged and eases each phase itself.</summary>
+    protected virtual double Curve(double progress) => Emphasized(progress);
 
     /// <summary>Nominal duration (ms) before <see cref="SpeedMultiplier"/>; read per frame (the
     /// genie's duration varies per style).</summary>
@@ -193,7 +197,7 @@ public abstract class OverlayAnimatorBase : IMinimizeAnimator
         // Ease PROGRESS, then mirror — never mirror the eased value. Reversing an asymmetric curve
         // inverts it (a decelerate becomes an accelerate), so a restore would arrive at a hard stop
         // instead of settling. Both directions must decelerate into their landing.
-        double eased = Emphasized(progress);
+        double eased = Curve(progress);
         double warp = _reverse ? 1.0 - eased : eased;
 
         // Frame-rate cap: skip this frame's work if we painted too recently — but never skip the final
