@@ -214,6 +214,8 @@ public sealed partial class DockViewModel : ObservableObject
         ShowRunningIndicators = Settings.ShowRunningIndicators;
         if (Settings.MinimizeEffect == MinimizeEffect.Suck)
             Settings.MinimizeEffect = MinimizeEffect.Fade; // the vacuum funnel was retired
+        else if (Settings.MinimizeEffect == MinimizeEffect.Genie)
+            Settings.MinimizeEffect = MinimizeEffect.MacGenie; // Dockable's own genie was retired
 
         // First run: seed the dock's pin list from the current taskbar order, resolving each .lnk to
         // its actual target so we pin the destination (exe), not the shortcut file. Afterwards the

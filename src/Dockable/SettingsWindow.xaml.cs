@@ -87,7 +87,7 @@ public partial class SettingsWindow : Window
 
         PositionCombo.SelectedIndex = (int)s.Edge;   // DockEdge: Bottom, Left, Right, Top (matches combo order)
         GlassEffectCombo.SelectedIndex = (int)s.GlassEffect; // GlassEffect: Simple, Acrylic, LiquidGlass
-        MinimizeCombo.SelectedIndex = (int)s.MinimizeEffect; // MinimizeEffect: Genie, Scale, Fade
+        SelectMinimizeEffect(s.MinimizeEffect);
         HoverEffectCombo.SelectedIndex = (int)s.HoverEffect;       // HoverEffect: Magnify, Zoom, Lift
         HoverAnimationCombo.SelectedIndex = (int)s.HoverAnimation; // HoverAnimation: Smooth, Snappy, Spring
         PerformanceCombo.SelectedIndex = (int)s.PerformanceMode; // PerformanceMode: Auto, Quality, Performance
@@ -154,7 +154,7 @@ public partial class SettingsWindow : Window
         new("DockMenuBar", "Row_HoverEffect", () => RowOf(HoverEffectCombo), "hover effect magnify zoom lift seelen macos animation style"),
         new("DockMenuBar", "Row_HoverAnimation", () => RowOf(HoverAnimationCombo), "hover animation smooth snappy spring bounce elastic curve feel"),
         new("DockMenuBar", "Row_Position", () => RowOf(PositionCombo), "position on screen edge bottom left right side location"),
-        new("DockMenuBar", "Row_MinimizeUsing", () => RowOf(MinimizeCombo), "minimize using genie scale fade magic lamp warp animation effect restore"),
+        new("DockMenuBar", "Row_MinimizeUsing", () => RowOf(MinimizeCombo), "minimize using genie scale fade magic lamp warp animation effect restore windows default native modern classic windhawk"),
         new("DockMenuBar", "Label_EffectSpeed", () => RowOf(EffectSpeedSlider), "effect speed slow fast animation duration"),
         new("DockMenuBar", "Toggle_ShowIndicators", () => RowOf(IndicatorsSwitch), "indicators dots running open applications lights"),
         new("DockMenuBar", "Toggle_AnimateOpening", () => RowOf(AnimateOpeningSwitch), "animate opening applications bounce launch attention hop"),
@@ -798,9 +798,18 @@ public partial class SettingsWindow : Window
     {
         if (_initializing)
             return;
-        _vm.Settings.MinimizeEffect = (MinimizeEffect)MinimizeCombo.SelectedIndex; // 0 Genie, 1 Scale, 2 Fade
-        _vm.Save();
+        if (MinimizeCombo.SelectedItem is ComboBoxItem { Tag: string name } && Enum.TryParse(name, out MinimizeEffect effect))
+        {
+            _vm.Settings.MinimizeEffect = effect;
+            _vm.Save();
+        }
     }
+
+    /// <summary>Selects the combo item whose Tag names <paramref name="effect"/> (legacy enum members have
+    /// no item, so the index isn't the enum value).</summary>
+    private void SelectMinimizeEffect(MinimizeEffect effect)
+        => MinimizeCombo.SelectedItem = MinimizeCombo.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(i => i.Tag as string == effect.ToString());
 
     // --- Hover effect / animation ---
 
@@ -894,7 +903,7 @@ public partial class SettingsWindow : Window
         var s = _vm.Settings;
         MagnificationSlider.Value = MagnificationToStep(s);
         PositionCombo.SelectedIndex = (int)s.Edge;
-        MinimizeCombo.SelectedIndex = (int)s.MinimizeEffect;
+        SelectMinimizeEffect(s.MinimizeEffect);
         AutoHideDockSwitch.IsChecked = s.AutoHideDock;
         ShowSettingsInDockSwitch.IsChecked = s.ShowSettingsInDock; // the tile's "Keep in Dock" menu
         _initializing = false;

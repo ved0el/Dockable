@@ -8,83 +8,59 @@ using Dockable.Interop;
 namespace Dockable.Genie;
 
 /// <summary>
-/// Plays the macOS "genie" (a.k.a. magic lamp — the same algorithm KDE's Magic Lamp uses): a captured
-/// window image on a grid mesh whose SIDES follow fixed S-curves from the window's edges down to a neck
-/// the width of the dock icon. Two overlapping phases:
-/// <list type="number">
-/// <item><b>Bend</b> — rows stay put while the S-curve fades in, so the edge nearest the dock bows in
-/// toward the icon.</item>
-/// <item><b>Slide</b> — the whole sheet travels along the curve toward the dock; every row's width is
-/// read off the curve at the row's CURRENT position, so the shape stays a stable lamp while the content
-/// pours through the neck and is pressed into a short band inside the icon.</item>
+/// The macOS "genie" (magic lamp), in the two styles ported from Windhawk's "MacOS Minimize Animation":
+/// <list type="bullet">
+/// <item><see cref="GenieStyle.MacModern"/> — Potassiumuncher's lamp curve (<c>CalculateLampVertexMacOS</c>):
+/// a per-vertex warp that necks the window down into the icon with a sideways ripple.</item>
+/// <item><see cref="GenieStyle.MacClassic"/> — the mod's original row-staggered strips (<c>morphAt</c>);
+/// also the Windows Animations mod's genie, which is the same algorithm.</item>
 /// </list>
-/// A restore plays the same frames backwards (slide out, then un-bend). Width as a function of screen
-/// position — not of each row's own progress — is what makes it read as the Dock rather than a cone.
-/// Rendered with WPF 3D (Viewport3D + MeshGeometry3D); the pre-warmed, reusable, click-through overlay
-/// and the render loop live in <see cref="OverlayAnimatorBase"/>. Coordinates are DIP.
+/// A restore plays the frames backwards. Rendered with WPF 3D (Viewport3D + MeshGeometry3D); the
+/// pre-warmed, reusable, click-through overlay and the render loop live in
+/// <see cref="OverlayAnimatorBase"/>. Coordinates are DIP.
 /// </summary>
 public sealed class GenieAnimator : OverlayAnimatorBase
 {
+    public enum GenieStyle { MacModern, MacClassic }
+
+    /// <summary>Which genie to play; set before each play.</summary>
+    public GenieStyle Style { get; set; } = GenieStyle.MacModern;
+
+    /// <summary>The Windhawk mod's default duration (both of its styles).</summary>
+    private const double MacDurationMs = 450;
+
+    /// <summary>MacModern's taskbar-icon rect width, from the mod: 22 wide, centred on the button, its
+    /// top on the taskbar's top edge — here the landing line.</summary>
+    private const double MacIconWidth = 22;
+
+    /// <summary>MacClassic: how far the morph is staggered across rows (rows nearest the dock lead).</summary>
+    private const double MacSpread = 0.65;
+
     // Mesh resolution, resolved from PerformanceProfile at overlay-build time (coarser when reduced).
-    // Rows carry the curve; columns only need to keep the texture mapping smooth.
     private int Columns = 12;
     private int Rows = 48;
-
-    // --- Tunables (blind constants; adjust by feel) ---
-
-    /// <summary>Nominal length (ms) at speed 1× (tuned by feel: 520 read as rushed).</summary>
-    private const double DurationMs = 650;
-
-    /// <summary>The bend phase runs over warp [0, BendEnd]; the slide over [SlideStart, 1]. The overlap
-    /// keeps the motion continuous — the sheet starts travelling while it is still curling in.</summary>
-    private const double BendEnd = 0.45;
-    private const double SlideStart = 0.2;
-
-    /// <summary>Neck width at the landing line (just above the icon's top edge), as a fraction of the
-    /// icon's width (floor in DIP): a stream a little narrower than the icon pouring into it.</summary>
-    private const double NeckWidthFactor = 0.7;
-    private const double NeckWidthFloor = 8;
-
-    /// <summary>Past the neck the stream sinks into the icon (it ends IN the icon, not at a point),
-    /// still narrowing to <see cref="TailWidthFactor"/> of the neck (~0.42 icon), then dissolves
-    /// (FadeStartWarp).</summary>
-    private const double TailWidthFactor = 0.6;
-
-    /// <summary>How deep into the icon (fraction of its height, from its top edge) the stream's far end
-    /// stops. Below 0.5 on purpose: the whole window is packed above that line, so its visual mass sits
-    /// higher than the line itself — 0.35 makes the last frames read as the icon's middle.</summary>
-    private const double EndDepthFactor = 0.35;
-
-    /// <summary>The landing line sits this far above the icon's top edge — mirrors DockWindow's
-    /// LandingLiftDip, so the band below can end exactly at the icon's centre.</summary>
-    private const double LandingLiftDip = 6;
 
     private MeshGeometry3D? _mesh;
     private Point3DCollection? _positions; // == _mesh.Positions; detached while bulk-mutated each frame
     private ImageBrush? _brush;
     private OrthographicCamera? _camera;
 
-    // Per-play invariants (recomputed by PreparePlay — which runs twice on the intercepted path, once
-    // with ShowAtSource's placeholder target and again from AnimateTo; both are complete recomputes).
-    private bool _down;        // the dock is beyond the window's bottom (screen-down) vs its top
-    private double _depthD;    // distance from the window's far edge to the landing line (the neck)
-    private double _bandH;     // depth of the final band inside the icon
-    private double _neckL, _neckR;
-    private double[]? _rowDepth; // each row's starting depth from the far edge
+    // Per-play (PreparePlay runs twice on the intercepted path: ShowAtSource's placeholder, then AnimateTo).
+    private bool _down; // the dock is beyond the window's bottom (screen-down) vs its top
 
-    protected override double BaseDurationMs => DurationMs;
+    protected override double BaseDurationMs => MacDurationMs;
 
     protected override string ProfileName => "Genie";
 
-    // The bend/slide phases carry their own easing (below); a second curve on top would compound.
-    protected override double Curve(double progress) => progress;
+    // MacModern eases the whole progress with smoothstep (as the mod does); MacClassic smoothsteps per row.
+    protected override double Curve(double progress)
+        => Style == GenieStyle.MacModern ? SmoothStep(progress) : progress;
 
     protected override UIElement BuildOverlayContent()
     {
         (Columns, Rows) = PerformanceProfile.GenieMesh;
         _mesh = BuildMesh();
         _positions = _mesh.Positions; // held so we can detach/reattach it cheaply each frame
-        _rowDepth = new double[Rows + 1];
 
         _brush = new ImageBrush { Stretch = Stretch.Fill };
         var model = new GeometryModel3D(_mesh, new DiffuseMaterial(_brush));
@@ -161,85 +137,84 @@ public sealed class GenieAnimator : OverlayAnimatorBase
         return mesh;
     }
 
-    /// <summary>Resolves direction, the neck line and width, and each row's starting depth. Depth is
-    /// measured from the window's FAR edge toward the dock, so one code path serves a dock below or
-    /// above the window.</summary>
-    protected override void PreparePlay()
-    {
-        var src = Src;
-        double h = Math.Max(src.Height, 1);
-        _down = Target.Y >= src.Top + src.Height / 2;
-        double depth = _down ? Target.Y - src.Top : src.Bottom - Target.Y;
-        // A window whose near edge already reaches past the landing line (a maximized window against
-        // the dock, an auto-hidden dock) would put the neck inside it; keep a sane minimum so the curve
-        // never degenerates (and nothing divides by ~0).
-        _depthD = Math.Max(depth, Math.Max(h * 0.35, 1));
-        _bandH = Math.Max(4, LandingLiftDip + TargetTileWidth * EndDepthFactor);
-
-        double half = Math.Max(NeckWidthFloor, TargetTileWidth * NeckWidthFactor) / 2;
-        _neckL = Target.X - half;
-        _neckR = Target.X + half;
-
-        for (int j = 0; j <= Rows; j++)
-        {
-            double v = (double)j / Rows;
-            _rowDepth![j] = (_down ? v : 1 - v) * h;
-        }
-    }
+    protected override void PreparePlay() => _down = Target.Y >= Src.Top + Src.Height / 2;
 
     protected override void ApplyFrame(double warp)
     {
+        if (Style == GenieStyle.MacModern)
+            ApplyMacModern(warp);
+        else
+            ApplyMacClassic(warp);
+    }
+
+    // The mod's lamp curve is written for a dock BELOW the window; a dock above runs it mirrored
+    // vertically (y → -y, rows counted from the bottom edge), as the mod's classic style does.
+    // (Side docks don't exist yet; both styles are vertical-only.)
+    private void ApplyMacModern(double p)
+    {
+        var src = Src;
         var mesh = _mesh!;
         var positions = _positions!;
-        var src = Src;
-        double h = Math.Max(src.Height, 1);
-        double D = _depthD;
-
-        double bend = SmootherStep(Clamp01(warp / BendEnd));
-        // Slide: starts from rest but is still moving when the tail hits the icon (velocity 0.8 at the
-        // end) — the Dock pulls the window IN, it doesn't ease it to a stop. Restores mirror this, so
-        // the window leaves the icon briskly and settles at its frame.
-        double ts = Clamp01((warp - SlideStart) / (1 - SlideStart));
-        double slide = ts * ts * (2.2 - 1.2 * ts);
-        double travel = slide * D;                      // the far edge reaches the neck at slide = 1
-        double squeeze = Lerp(1.0, _bandH / h, slide);  // past the neck, rows pack into the icon band
-        int rowStride = Columns + 1;
+        // Icon rect in overlay DIP; its top stays at least a pixel below the window top so the curve
+        // never divides by ~0 (a window reaching under the landing line).
+        double sign = _down ? 1 : -1;
+        double top = _down ? src.Top : -src.Bottom; // the window's far edge, in the (mirrored) space
+        double ix = Target.X - MacIconWidth / 2, iy = Math.Max(sign * Target.Y, top + 1), iw = MacIconWidth;
+        double k = p <= 0.3 ? p / 0.3 : 1.0;
+        double j = p > 0.3 ? (p - 0.3) / 0.7 : 0.0;
+        double expandHeight = iy - top - src.Height;
+        double fullHeight = (iy - top) - expandHeight * (1 - k);
+        double height = fullHeight - j * fullHeight;
+        double offsetY = iy - top - height - expandHeight * (1 - k);
         double mh = MonitorHeight;
+        int rowStride = Columns + 1;
 
-        mesh.Positions = null; // detach for cheap bulk mutation; reattach once below
-        for (int j = 0; j <= Rows; j++)
+        mesh.Positions = null;
+        for (int r = 0; r <= Rows; r++)
         {
-            double d = _rowDepth![j] + travel;
-            double left, right;
-            if (d >= D)
+            double ty = _down ? (double)r / Rows : 1 - (double)r / Rows; // mesh row r is texture row r/Rows
+            double y = ty * height;
+            double offsetX = (ix - src.Left) * (y / (fullHeight + 0.1)) * k + (ix - src.Left) * j;
+            double ripple = Math.Sin((height - y) / fullHeight * 2 * Math.PI + Math.PI) / 7 * k;
+            double yUp = mh - sign * (top + y + offsetY);
+            for (int c = 0; c <= Columns; c++)
             {
-                d = D + (d - D) * squeeze;
-                // Inside the icon the stream keeps narrowing toward a thin tail.
-                double taper = Lerp(1.0, TailWidthFactor, SmoothStep(Clamp01((d - D) / _bandH)));
-                left = Lerp(Target.X, _neckL, taper);
-                right = Lerp(Target.X, _neckR, taper);
+                double tx = (double)c / Columns;
+                double x = tx * iw + tx * (src.Width - iw) * (1 - j) * (1 - ty) + tx * (src.Width - iw) * (1 - k) * ty;
+                double effectX = ripple * (src.Left + src.Width * tx - (ix + iw * tx));
+                positions[r * rowStride + c] = new Point3D(src.Left + x + offsetX + effectX, yUp, 0);
             }
-            else
-            {
-                double k = SmoothStep(d / D); // the lamp's S-curve: full width far away, neck at the dock
-                left = Lerp(src.Left, _neckL, k);
-                right = Lerp(src.Right, _neckR, k);
-            }
-            // The curve fades in during the bend; at warp 0 every row is exactly its source span.
-            left = Lerp(src.Left, left, bend);
-            right = Lerp(src.Right, right, bend);
-
-            double y = _down ? src.Top + d : src.Bottom - d;
-            double yUp = mh - y; // 3D Y is up; screen Y is down — flip into the camera's space
-            int rowBase = j * rowStride;
-            double span = right - left;
-            for (int i = 0; i <= Columns; i++)
-                positions[rowBase + i] = new Point3D(left + span * i / Columns, yUp, 0);
         }
         mesh.Positions = positions;
     }
 
-    private static double SmootherStep(double t) => t * t * t * (t * (6 * t - 15) + 10);
+    private void ApplyMacClassic(double tt)
+    {
+        var src = Src;
+        var mesh = _mesh!;
+        var positions = _positions!;
+        double dockX = Target.X, dockY = Target.Y;
+        double neckW = Math.Clamp(src.Width * 0.03, 12, 60);
+        double cx0 = src.Left + src.Width / 2;
+        double mh = MonitorHeight;
+        int rowStride = Columns + 1;
+
+        mesh.Positions = null;
+        for (int r = 0; r <= Rows; r++)
+        {
+            double v = (double)r / Rows;
+            double m = Clamp01(tt * (1 + MacSpread) - (1 - (_down ? v : 1 - v)) * MacSpread);
+            double e = SmoothStep(m);
+            double y = src.Top + src.Height * v;
+            y += (dockY - y) * e;
+            double width = Math.Max(1, src.Width + (neckW - src.Width) * e);
+            double left = cx0 + (dockX - cx0) * e - width / 2;
+            double yUp = mh - y;
+            for (int c = 0; c <= Columns; c++)
+                positions[r * rowStride + c] = new Point3D(left + width * c / Columns, yUp, 0);
+        }
+        mesh.Positions = positions;
+    }
+
     private static double Clamp01(double t) => t < 0 ? 0 : t > 1 ? 1 : t;
-    private static double Lerp(double a, double b, double t) => a + (b - a) * t;
 }

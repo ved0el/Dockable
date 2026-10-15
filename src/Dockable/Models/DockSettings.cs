@@ -61,12 +61,12 @@ public enum PerformanceMode
 }
 
 /// <summary>How a window animates as it minimizes into / restores from the dock. Persisted by NAME
-/// (JsonStringEnumConverter), so members can be reordered but never removed; the first three are the
-/// Preferences combo / dock menu order.</summary>
+/// (JsonStringEnumConverter), so members can be reordered but never removed. The Preferences combo and
+/// the dock menu list them by name (DockWindow.MinimizeEffectChoices), not by ordinal.</summary>
 public enum MinimizeEffect
 {
-    /// <summary>macOS "magic lamp": the sides bend toward the icon, then the window slides through the
-    /// neck into it (and back out on restore).</summary>
+    /// <summary>Legacy (Dockable's own genie, retired for the ported ones); migrated to
+    /// <see cref="MacGenie"/> at load.</summary>
     Genie,
 
     /// <summary>macOS Scale: the window shrinks straight into its icon.</summary>
@@ -77,6 +77,18 @@ public enum MinimizeEffect
 
     /// <summary>Legacy (the old vacuum funnel); migrated to <see cref="Fade"/> at load.</summary>
     Suck,
+
+    /// <summary>No dock effect: the OS plays its own minimize/restore animation (the gestures are not
+    /// intercepted, transitions are never suppressed); the dock only tracks the window.</summary>
+    System,
+
+    /// <summary>Genie from Windhawk's "MacOS Minimize Animation", Modern style (Potassiumuncher's lamp
+    /// mesh — a per-vertex warp with a sideways ripple).</summary>
+    MacGenie,
+
+    /// <summary>Genie from Windhawk's "MacOS Minimize Animation", Classic style (row-staggered strips
+    /// that neck down toward the dock, the rows nearest it leading).</summary>
+    MacGenieClassic,
 }
 
 /// <summary>How dock icons react to the cursor hovering over them.</summary>
@@ -155,8 +167,11 @@ public sealed class DockSettings
     /// </summary>
     public PerformanceMode PerformanceMode { get; set; } = PerformanceMode.Auto;
 
-    /// <summary>Window minimize/restore animation style.</summary>
-    public MinimizeEffect MinimizeEffect { get; set; } = MinimizeEffect.Genie;
+    /// <summary>Window minimize/restore animation style. Read leniently: a name this build doesn't know
+    /// (an effect from a newer/older build) falls back to the default instead of failing the whole load,
+    /// which would reset every setting.</summary>
+    [System.Text.Json.Serialization.JsonConverter(typeof(LenientMinimizeEffectConverter))]
+    public MinimizeEffect MinimizeEffect { get; set; } = MinimizeEffect.MacGenie;
 
     /// <summary>Legacy (an old speed scale whose "Default" doubled every duration); unused — superseded
     /// by <see cref="MinimizeSpeed"/>, so existing users land on the new default.</summary>
@@ -295,4 +310,19 @@ public sealed class DockSettings
     public Dictionary<string, string>? PinIcons { get; set; }
 
     public static DockSettings CreateDefault() => new();
+}
+
+/// <summary>Reads <see cref="MinimizeEffect"/> by name, mapping unknown names to
+/// <see cref="MinimizeEffect.MacGenie"/>; writes the name.</summary>
+public sealed class LenientMinimizeEffectConverter : System.Text.Json.Serialization.JsonConverter<MinimizeEffect>
+{
+    public override MinimizeEffect Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options)
+        => reader.TokenType == System.Text.Json.JsonTokenType.String
+           && Enum.TryParse(reader.GetString(), ignoreCase: true, out MinimizeEffect value)
+           && Enum.IsDefined(value)
+            ? value
+            : MinimizeEffect.MacGenie;
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, MinimizeEffect value, System.Text.Json.JsonSerializerOptions options)
+        => writer.WriteStringValue(value.ToString());
 }

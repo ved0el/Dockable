@@ -759,9 +759,12 @@
                                 <ComboBox x:Name="MinimizeCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
                                           AutomationProperties.Name="{loc:Loc Row_MinimizeUsing}"
                                           VerticalAlignment="Center" SelectionChanged="MinimizeCombo_SelectionChanged">
-                                    <ComboBoxItem Content="{loc:Loc Minimize_Genie}" />
-                                    <ComboBoxItem Content="{loc:Loc Minimize_Scale}" />
-                                    <ComboBoxItem Content="{loc:Loc Minimize_Fade}" />
+                                    <!-- Selected by Tag (the MinimizeEffect name), not index — legacy members are skipped. Same order as DockWindow.MinimizeEffectChoices. -->
+                                    <ComboBoxItem Content="{loc:Loc Minimize_System}" Tag="System" />
+                                    <ComboBoxItem Content="{loc:Loc Minimize_MacGenie}" Tag="MacGenie" />
+                                    <ComboBoxItem Content="{loc:Loc Minimize_MacGenieClassic}" Tag="MacGenieClassic" />
+                                    <ComboBoxItem Content="{loc:Loc Minimize_Scale}" Tag="Scale" />
+                                    <ComboBoxItem Content="{loc:Loc Minimize_Fade}" Tag="Fade" />
                                 </ComboBox>
                             </Grid>
 

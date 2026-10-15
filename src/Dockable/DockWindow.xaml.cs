@@ -527,6 +527,8 @@ public partial class DockWindow : Window
 
             // Pre-empt the minimize gesture so the warp's frame 0 is on screen before the OS minimizes.
             // Defer the real work off the hook callback so the low-level hook returns immediately.
+            // "Windows default" leaves the gestures to the OS so it plays its own animation.
+            _minimizeIntercept.InterceptEnabled = () => !NativeMinimize;
             _minimizeIntercept.MinimizeRequested += hwnd =>
                 Dispatcher.BeginInvoke(() => App.Current.DockFor(hwnd).InterceptedMinimize(hwnd));
             _minimizeIntercept.MinimizeAllRequested += () => Dispatcher.BeginInvoke(OnMinimizeAllRequested);
@@ -2201,16 +2203,24 @@ public partial class DockWindow : Window
 
     // --- Minimize → dock tile, and tile click → restore (genie or scale per the setting) ---
 
-    /// <summary>The minimize/restore animator selected by <see cref="MinimizeEffect"/>: the mesh genie,
-    /// or the image animator in its Scale / Fade style.</summary>
+    /// <summary>The "Windows default" effect: no dock animation, no transition suppression.</summary>
+    private bool NativeMinimize => ViewModel?.Settings.MinimizeEffect == MinimizeEffect.System;
+
+    /// <summary>The minimize/restore animator selected by <see cref="MinimizeEffect"/>: the genie mesh in
+    /// its Modern / Classic style (ported from "MacOS Minimize Animation"), or the image animator in its
+    /// Scale / Fade style.</summary>
     private IMinimizeAnimator MinimizeAnimator
     {
         get
         {
-            var effect = ViewModel?.Settings.MinimizeEffect ?? MinimizeEffect.Genie;
+            var effect = ViewModel?.Settings.MinimizeEffect ?? MinimizeEffect.MacGenie;
             double speed = ViewModel?.Settings.MinimizeSpeed ?? 1.0;
-            if (effect == MinimizeEffect.Genie)
+            if (effect is MinimizeEffect.Genie or MinimizeEffect.MacGenie or MinimizeEffect.MacGenieClassic)
             {
+                // (legacy Genie is migrated to MacGenie at load)
+                _genie.Style = effect == MinimizeEffect.MacGenieClassic
+                    ? GenieAnimator.GenieStyle.MacClassic
+                    : GenieAnimator.GenieStyle.MacModern;
                 _genie.SpeedMultiplier = speed;
                 return _genie;
             }
@@ -2495,6 +2505,30 @@ public partial class DockWindow : Window
             onDone?.Invoke();
             return;
         }
+
+        if (NativeMinimize)
+        {
+            // Windows default: the OS plays its own animation (transitions left alone); the dock only
+            // takes the window in — under its app icon or as a thumbnail tile.
+            if (windowStillVisible)
+            {
+                if (focusNext)
+                    MinimizeAndFocusNext(hwnd);
+                else
+                    WindowControl.Minimize(hwnd);
+            }
+            if (capture is not null)
+            {
+                var icon = ViewModel.Settings.MinimizeIntoIcon ? ViewModel.FindAppForWindow(hwnd) : null;
+                if (icon is not null)
+                    _iconMinimized[hwnd] = capture.Value.Bitmap;
+                else
+                    LoadOverlayIcon(ViewModel.AddMinimizedWindow(hwnd, capture.Value.Bitmap, TaskbarApps.GetWindowTitle(hwnd)), hwnd);
+            }
+            onDone?.Invoke();
+            return;
+        }
+
         BeginWarp(hwnd);
 
         WindowControl.SuppressTransitions(hwnd); // future restore won't play the OS animation
@@ -2606,7 +2640,8 @@ public partial class DockWindow : Window
                 continue; // already represented
 
             // A later restore should play our warp, not the OS animation (as for windows we minimize).
-            WindowControl.SuppressTransitions(hwnd);
+            if (!NativeMinimize)
+                WindowControl.SuppressTransitions(hwnd);
 
             var appVm = ViewModel.FindAppForWindow(hwnd);
             if (ViewModel.Settings.MinimizeIntoIcon && appVm is not null)
@@ -2694,7 +2729,7 @@ public partial class DockWindow : Window
             return;
         }
 
-        if (bitmap is null)
+        if (bitmap is null || NativeMinimize) // nothing to warp, or the OS animates the restore itself
         {
             WindowControl.Restore(hwnd);
             DropMinimizedTracking(hwnd, tile);
@@ -3234,9 +3269,8 @@ public partial class DockWindow : Window
         menu.Items.Add(position);
 
         var minimizeUsing = new MenuItem { Header = Loc.T("Menu_MinimizeUsing") };
-        minimizeUsing.Items.Add(MenuChoice("Minimize_Genie", s.MinimizeEffect == MinimizeEffect.Genie, () => PickMinimizeEffect(MinimizeEffect.Genie)));
-        minimizeUsing.Items.Add(MenuChoice("Minimize_Scale", s.MinimizeEffect == MinimizeEffect.Scale, () => PickMinimizeEffect(MinimizeEffect.Scale)));
-        minimizeUsing.Items.Add(MenuChoice("Minimize_Fade", s.MinimizeEffect == MinimizeEffect.Fade, () => PickMinimizeEffect(MinimizeEffect.Fade)));
+        foreach (var (key, effect) in MinimizeEffectChoices)
+            minimizeUsing.Items.Add(MenuChoice(key, s.MinimizeEffect == effect, () => PickMinimizeEffect(effect)));
         menu.Items.Add(minimizeUsing);
 
         menu.Items.Add(new Separator());
@@ -3254,6 +3288,16 @@ public partial class DockWindow : Window
         SetEdge(edge);
         _settingsWindow?.SyncFromSettings();
     }
+
+    /// <summary>The "Minimize Using" choices in display order (the Preferences combo matches it).</summary>
+    internal static readonly (string Key, MinimizeEffect Effect)[] MinimizeEffectChoices =
+    [
+        ("Minimize_System", MinimizeEffect.System),
+        ("Minimize_MacGenie", MinimizeEffect.MacGenie),
+        ("Minimize_MacGenieClassic", MinimizeEffect.MacGenieClassic),
+        ("Minimize_Scale", MinimizeEffect.Scale),
+        ("Minimize_Fade", MinimizeEffect.Fade),
+    ];
 
     /// <summary>Context-menu pick of a minimize effect: persists it and syncs the open Preferences combo.</summary>
     private void PickMinimizeEffect(MinimizeEffect effect)

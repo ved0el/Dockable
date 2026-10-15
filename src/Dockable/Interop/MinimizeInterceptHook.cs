@@ -80,6 +80,11 @@ public sealed class MinimizeInterceptHook : IDisposable
     /// <summary>Fires with the HWND whose minimize the user just triggered (min-button click or Win+Down).</summary>
     public event Action<IntPtr>? MinimizeRequested;
 
+    /// <summary>Whether the minimize gestures (min button, Win+Down, Win+M, Win+D) are claimed at all.
+    /// False leaves them to the OS so it plays its native animation (the "Windows default" effect);
+    /// the raise-zone and snip watches keep running either way.</summary>
+    public Func<bool> InterceptEnabled { get; set; } = static () => true;
+
     /// <summary>Fires when the user pressed Win+M (minimize every window).</summary>
     public event Action? MinimizeAllRequested;
 
@@ -138,7 +143,7 @@ public sealed class MinimizeInterceptHook : IDisposable
             else if (wParam.Value == WM_LBUTTONDOWN)
             {
                 var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>((IntPtr)lParam.Value);
-                if (IsOnMinimizeButton(data.pt, out IntPtr hwnd))
+                if (InterceptEnabled() && IsOnMinimizeButton(data.pt, out IntPtr hwnd))
                 {
                     // Swallow the press so the native caption button never enters its modal tracking
                     // loop; arm and let the release decide. (Hover/highlight still passes through — we
@@ -251,7 +256,7 @@ public sealed class MinimizeInterceptHook : IDisposable
             if (data.vkCode == VK_DOWN)
             {
                 if (up) _winDownArmed = false;
-                else if (down && !_winDownArmed && WinHeld() && TryMinimizeForeground())
+                else if (down && !_winDownArmed && WinHeld() && InterceptEnabled() && TryMinimizeForeground())
                 {
                     _winDownArmed = true;
                     return new LRESULT(1); // handled Win+Down ourselves
@@ -260,7 +265,7 @@ public sealed class MinimizeInterceptHook : IDisposable
             else if (data.vkCode == VK_M)
             {
                 if (up) _winMArmed = false;
-                else if (down && !_winMArmed && WinHeld())
+                else if (down && !_winMArmed && WinHeld() && InterceptEnabled())
                 {
                     _winMArmed = true;
                     MinimizeAllRequested?.Invoke();
@@ -270,7 +275,7 @@ public sealed class MinimizeInterceptHook : IDisposable
             else if (data.vkCode == VK_D)
             {
                 if (up) _winDArmed = false;
-                else if (down && !_winDArmed && WinHeld())
+                else if (down && !_winDArmed && WinHeld() && InterceptEnabled())
                 {
                     _winDArmed = true;
                     ShowDesktopRequested?.Invoke();

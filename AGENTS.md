@@ -3,7 +3,7 @@
 A macOS-style **Dock for Windows 11**: a bottom bar that mirrors the taskbar (pinned + running
 apps), magnifies icons on hover, opens the Start menu, auto-hides the real taskbar, supports
 Light/Dark/Auto theming + a translucent/acrylic/liquid-glass bar + a Dock Preferences window,
-replaces the window minimize/restore with a "genie" (magic lamp), "scale", or "fade" effect into the dock, and is
+replaces the window minimize/restore with a genie (ported from a Windhawk mod), "scale", or "fade" effect into the dock, and is
 **fully localized** (English, pt-BR, es, uk, zh-Hans). This file is the standing guide for any coding-agent
 session here (Claude Code, Codex, Cursor, …) — read it first; it captures everything not obvious from the code.
 
@@ -176,7 +176,8 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
   zero velocity at both ends) is applied to PROGRESS and then mirrored for a restore, never the other
   way round (mirroring an eased value inverts the curve, so a restore would arrive at a hard stop).
   Restores run `RestoreDurationFactor` (1.1×) longer. Subclasses SHAPE the warp and must not re-ease it;
-  the genie overrides `Curve` to identity because its bend/slide phases carry their own easing.
+  the Mac genies keep the mod's own easing (Modern: smoothstep on progress; Classic: identity, each row
+  smoothsteps itself).
   `GenieAnimator.RefreshQuality` tears the overlay down so the next play rebuilds the mesh.
 
 ---
@@ -229,7 +230,7 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
 | `Language` | null | UI culture code (`en`/`pt-BR`/`es`/`uk`/`zh-Hans`). null = resolve from OS → en, then persist. |
 | `Theme` | `System` | `DockTheme` (System/Light/Dark; "System" shown as "Auto"). |
 | `GlassEffect` | `LiquidGlass` | `GlassEffect` bar background: Simple (translucent) / Acrylic / LiquidGlass. |
-| `MinimizeEffect` | `Genie` | `MinimizeEffect`: Genie (magic lamp) / Scale / Fade. Stored by name; legacy `Suck` → `Fade` at load. |
+| `MinimizeEffect` | `MacGenie` | `MinimizeEffect`: System (Windows default — no dock effect), MacGenie, MacGenieClassic (both ported from Windhawk's "MacOS Minimize Animation"), Scale, Fade — a flat list. Stored by name; legacy `Suck` → `Fade` and `Genie` (Dockable's own genie, retired) → `MacGenie` at load; read by `LenientMinimizeEffectConverter`, so an unknown name falls back to MacGenie instead of failing the whole settings load (which would reset everything). |
 | `MinimizeSpeed` | 1.0 | Minimize/restore speed multiplier (>1 faster, <1 slower); slider 0.6/0.8/1.0/1.25/1.5. (`EffectSpeed` is legacy, unused.) |
 | `IconSize` | 48 | Base icon cell size (DIP). |
 | `MaxIconSize` | 96 | Max magnified size. |
@@ -502,11 +503,17 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
 - **Restore-all on exit:** `RestoreAllMinimized` (first thing in `OnClosed`) un-minimizes every
   dock-minimized window (`RestoreNoForeground`) and re-enables the transitions we suppressed, so the
   user isn't left with windows stranded behind a gone dock. (A hard force-kill skips it.)
-- **Three effects**, chosen by `DockSettings.MinimizeEffect` (`Genie`/`Scale`/`Fade`; combo + dock
-  menu in that order; the legacy `Suck` name still parses and is migrated to `Fade` in `Load`).
-  `DockWindow.MinimizeAnimator` maps them to two pre-warmed `IMinimizeAnimator`s: **Genie** →
-  `GenieAnimator` (3D mesh magic lamp, 650 ms); **Scale** / **Fade** → `ScaleAnimator` with its
-  `Style`: Scale shrinks the capture icon-sized onto the icon centre (320 ms), Fade (Windows 11-like)
+- **Ported genie + native mode.** `MacGenie`/`MacGenieClassic` are `GenieAnimator.Style`
+  MacModern/MacClassic — the "MacOS Minimize Animation" mod's lamp curve (`CalculateLampVertexMacOS`)
+  and row strips (`morphAt`, spread 0.65, neck clamp(W·0.03, 12, 60)) on the one mesh, 450 ms; a dock
+  above the window runs the lamp mirrored. Only these two were ported (the "Windows Animations" mod's
+  genie is the same algorithm as Classic; its other effects were deliberately not ported). **System**
+  (`NativeMinimize`): `MinimizeInterceptHook.InterceptEnabled` returns false so the gestures go to the
+  OS, transitions are never suppressed, and `MinimizeToDock` / `RestoreWindowAnimated` only add/drop the
+  tile. The combo and dock menu list effects in `DockWindow.MinimizeEffectChoices` order (combo items
+  carry a Tag = enum name, so legacy members have no item).
+- **Dockable's own effects**, chosen by `DockSettings.MinimizeEffect` and mapped by
+  `DockWindow.MinimizeAnimator`: **Scale** / **Fade** → `ScaleAnimator` with its `Style`: Scale shrinks the capture icon-sized onto the icon centre (320 ms), Fade (Windows 11-like)
   shrinks to 0.82 while drifting 30% toward the icon and fading out (240 ms). Durations are at 1×;
   `MinimizeSpeed` (0.6–1.5, Default 1.0) is the animator's `SpeedMultiplier`. The old `EffectSpeed`
   (whose "Default" 0.5 doubled every duration) is legacy/unused. Optionally, `MinimizeIntoIcon` makes a
@@ -554,19 +561,10 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
   free (it emerges from the dock). **Every frame-painting path must go through `ApplyFrameAndFade`** —
   a play that ended faded out would otherwise leave the next `ShowAtSource` invisible, and that frame
   is what covers the real window while it minimizes behind it.
-- **The genie is a MAGIC LAMP: width is a function of screen position, not of a row's progress.**
-  `GenieAnimator` builds one fixed S-curve per side (`SmoothStep(depth / D)`, from the window's edges
-  to a neck `NeckWidthFactor` 0.7 × icon wide at the landing line) and runs two overlapping phases on
-  LINEAR warp (it overrides `Curve` to identity and eases each phase itself): **bend** (warp 0→0.45,
-  smootherstep) fades the curve in with rows in place; **slide** (0.2→1, `2.2t²−1.2t³`: from rest, still moving into the icon) moves every row
-  toward the dock by up to `D` and reads its width off the curve where it NOW is — rows past the neck
-  are packed into a band that ends `EndDepthFactor` 0.35 × the icon below its top (landing lift + that; the genie mirrors `LandingLiftDip`) — the packed mass then reads as the icon's middle and keep tapering to `TailWidthFactor` 0.6 × the neck (~0.42 icon) — it ends in the icon, not at a point — then the base dissolves it.
-  Depth is measured from the window's far edge, so a top dock works too; `D` has a floor of 0.35 × the
-  window height for windows that already reach past the landing line. The old per-row-progress
-  stagger (which needed a `WidthPinchPower` hack to avoid reading as a cone) is gone — don't bring it
-  back. `TileWidthOf` feeds both animators: a just-added tile is still growing its slot in
-  (AppearScale ≈ 0), so its live RenderWidth reads ~2 DIP at play time — `TileWidthOf` divides by
-  AppearScale mid-grow to project the settled width.
+- `TileWidthOf` feeds every animator: a just-added tile is still growing its slot in (AppearScale ≈ 0),
+  so its live RenderWidth reads ~2 DIP at play time — `TileWidthOf` divides by AppearScale mid-grow to
+  project the settled width. (Dockable's own bend/slide "magic lamp" genie was removed as a duplicate
+  of the ported Mac genies; it's in git history before this change.)
 - Orchestration in `DockWindow` (`InterceptedMinimize`/`MinimizeOneAnimated`/`MinimizeToDock` for
   minimize; `OnWindowMinimizing` reactive fallback; `RestoreMinimized`/`RestoreWindowAnimated` for
   restore); `_busy` set guards re-entrancy. Rough edges: minimizes that fall through to the reactive
@@ -699,7 +697,7 @@ The layout is what `ls src/Dockable` shows; these are the notes the code doesn't
 - **The dock's empty-space / separator menu** (`BuildSeparatorMenu`) is macOS's Dock menu: Task
   Manager | sep | Turn Hiding On/Off (`AutoHideDock`), Turn Magnification On/Off (re-enabling bumps
   a stale `MaxIconSize` to 2× so "on" is never a no-op), Position on Screen ▶ Left/Bottom/Right
-  (checkmarked), Minimize Using ▶ Genie/Scale/Fade (checkmarked) | sep | Preferences, About | sep |
+  (checkmarked), Minimize Using ▶ every effect, flat list (checkmarked) | sep | Preferences, About | sep |
   Quit. Picks sync an open Preferences window via `SettingsWindow.SyncFromSettings()`. The menu
   bar's empty-space right-click shows the four-item variant (Task Manager/Prefs/About/Quit).
 
