@@ -239,3 +239,6 @@ LockResource
 SizeofResource
 IsHungAppWindow
 DwmExtendFrameIntoClientArea
+
+// --- Taskbar watchdog: don't respawn it while the session is logging off / shutting down ---
+GetSystemMetrics

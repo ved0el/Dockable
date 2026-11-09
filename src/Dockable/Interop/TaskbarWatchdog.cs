@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using Windows.Win32;
+using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace Dockable.Interop;
 
@@ -61,6 +63,11 @@ internal static class TaskbarWatchdog
             process.Exited += (_, _) =>
             {
                 process.Dispose();
+                // Logoff/shutdown ends the watchdog before the dock. A process started now fails
+                // with 0xc0000142 and Windows shows an "unable to start correctly" popup — and the
+                // dock is going away too, so there is nothing left to guard.
+                if (PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_SHUTTINGDOWN) != 0)
+                    return;
                 if (Interlocked.Increment(ref _respawns) <= MaxRespawns)
                     Spawn();
             };
